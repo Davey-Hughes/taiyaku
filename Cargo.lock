@@ -929,6 +929,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "haiyaku"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92a77936845e88c7b39332934a72c4f5ac991aca7f1667652a9893360517dc53"
+dependencies = [
+ "rusqlite",
+ "sha2",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2660,6 +2670,7 @@ version = "0.0.0"
 dependencies = [
  "argon2",
  "base64 0.23.1",
+ "haiyaku",
  "ignore",
  "notify",
  "rand 0.10.2",

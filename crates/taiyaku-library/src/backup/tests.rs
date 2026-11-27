@@ -292,13 +292,22 @@ fn pruning_more_than_there_are_deletes_nothing_and_zero_deletes_all() {
 fn stamp_of_reads_the_version_a_backup_was_taken_before() {
     assert_eq!(
         stamp_of("library-20261110T120000Z-before-v19.db"),
-        Some(("20261110T120000Z".to_string(), Some(19))),
+        Some(("20261110T120000Z".to_string(), Some(Before::Taiyaku(19)))),
         "a tagged name answers its stamp and its version"
     );
     assert_eq!(
         stamp_of("library-20261110T120000Z.db"),
         Some(("20261110T120000Z".to_string(), None)),
         "a plain name answers its stamp and no version"
+    );
+}
+
+#[test]
+fn stamp_of_reads_the_haiyaku_version_a_backup_was_taken_before() {
+    assert_eq!(
+        stamp_of("library-20261110T120000Z-before-haiyaku-v2.db"),
+        Some(("20261110T120000Z".to_string(), Some(Before::Haiyaku(2)))),
+        "a name taken before haiyaku's migration answers haiyaku's version"
     );
 }
 
@@ -312,6 +321,7 @@ fn stamp_of_refuses_a_version_that_is_not_written_as_digits() {
         "library-20261110T120000Z-before-vx.db",
         "library-20261110T120000Z-before-v+5.db",
         "library-20261110T120000Z-before-v1/9.db",
+        "library-20261110T120000Z-before-haiyaku-v.db",
     ] {
         assert_eq!(stamp_of(name), None, "`{name}` is not a backup name");
     }
@@ -324,6 +334,7 @@ fn stamp_of_refuses_a_version_with_a_leading_zero_or_past_u32() {
     for name in [
         "library-20261110T120000Z-before-v019.db",
         "library-20261110T120000Z-before-v4294967296.db",
+        "library-20261110T120000Z-before-haiyaku-v02.db",
     ] {
         assert_eq!(stamp_of(name), None, "`{name}` is not a backup name");
     }
@@ -339,6 +350,7 @@ fn stamp_of_refuses_any_other_tail_after_the_stamp() {
         "library-20261110T120000Z-x-before-v19.db",
         "library-20261110T120000Z-after-v19.db",
         "library-20261110T120000é-before-v19.db",
+        "library-20261110T120000Z-before-haiyaku-v2-before-v3.db",
     ] {
         assert_eq!(stamp_of(name), None, "`{name}` is not a backup name");
     }
@@ -359,7 +371,7 @@ fn listing_answers_a_backup_named_for_a_migration_with_its_version() {
                 name: "library-20261110T120000Z-before-v19.db".to_string(),
                 bytes: 3,
                 taken: "20261110T120000Z".to_string(),
-                before: Some(19),
+                before: Some(Before::Taiyaku(19)),
             },
             Backup {
                 name: "library-20261109T120000Z.db".to_string(),
@@ -386,7 +398,7 @@ fn take_named_answers_the_version_a_tagged_name_holds() {
 
     let taken =
         take_named(&conn, &into, "library-20261110T120000Z-before-v19.db").expect("takes it");
-    assert_eq!(taken.before, Some(19), "{taken:?}");
+    assert_eq!(taken.before, Some(Before::Taiyaku(19)), "{taken:?}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -460,6 +472,48 @@ fn pruning_neither_counts_nor_deletes_a_tagged_backup_that_is_oldest() {
     assert!(
         dir.join("library-20261031T000000Z-before-v19.db").exists(),
         "the tagged backup is kept"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--keep` leaves a backup taken before haiyaku's migration as it leaves one
+/// taken before taiyaku's. Listed as one first, so it is kept as tagged and
+/// not as a name `list` passes over.
+#[test]
+fn pruning_neither_counts_nor_deletes_a_backup_taken_before_haiyakus_migration() {
+    let dir = scratch("prune-tagged-haiyaku");
+    write_backups(
+        &dir,
+        &[
+            "library-20261031T000000Z-before-v19.db",
+            "library-20261101T000000Z-before-haiyaku-v2.db",
+            "library-20261102T000000Z.db",
+        ],
+    );
+    assert!(
+        list(&dir)
+            .expect("lists")
+            .iter()
+            .any(|backup| backup.before == Some(Before::Haiyaku(2))),
+        "listed as taken before haiyaku's migration"
+    );
+
+    let removed = prune(&dir, 0).expect("prunes");
+
+    assert!(
+        dir.join("library-20261101T000000Z-before-haiyaku-v2.db")
+            .exists(),
+        "the backup before haiyaku's migration is kept"
+    );
+    assert!(
+        dir.join("library-20261031T000000Z-before-v19.db").exists(),
+        "beside the one before taiyaku's"
+    );
+    assert_eq!(
+        removed,
+        vec!["library-20261102T000000Z.db".to_string()],
+        "and the plain backup goes"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

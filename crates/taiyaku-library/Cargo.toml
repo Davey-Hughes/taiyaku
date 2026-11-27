@@ -23,6 +23,14 @@ authors.workspace = true
 [dependencies]
 argon2 = "0.5.3"
 base64 = "0.23.1"
+# Character cards: haiyaku's tables live beside taiyaku's in the one database.
+# No default features, for two reasons. The server only reads haiyaku's logs
+# and folds them, so `extract` and `cli` (an EPUB reader, model backends and a
+# binary) would compile for nothing. And haiyaku's `bundled` would be a second
+# say in which SQLite links: `rusqlite`'s `bundled` below already gives the one
+# connection its one SQLite, and Cargo's feature unification hands haiyaku the
+# same one.
+haiyaku = { version = "0.2", default-features = false }
 # O92's scanner half: `root.exclude_globs` applied to the walk. The matcher
 # behind ripgrep, taken whole rather than reimplemented — it reads a line
 # exactly as a `.gitignore` file holds it, so negation, anchoring,
@@ -92,8 +100,10 @@ taiyaku-read = { path = "../taiyaku-read", features = ["test-support"] }
 # Exposes `account::Access::roots`, `scan::file_under_its_own_library` and the
 # `test_support` fixtures to other crates' tests. Enabled only from a
 # `[dev-dependencies]` entry, so it reaches test builds and `--all-features`
-# builds and no binary this workspace ships.
+# builds and no binary this workspace ships. It turns on `taiyaku-read`'s own,
+# because `test_support::keepers` writes its EPUBs with that crate's helper in
+# whichever crate's tests call it.
 [features]
-test-support = []
+test-support = ["taiyaku-read/test-support"]
 # Passes `taiyaku-read`'s RAR backend through, so the binary turns it on by one name; off by default, so a plain build needs no libarchive.
 rar-libarchive = ["taiyaku-read/rar-libarchive"]

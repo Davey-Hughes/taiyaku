@@ -107,6 +107,8 @@ export interface Edition {
   blocks: Block[]
   /** Its images between blocks, in order; none sent where it has none. */
   figures?: Figure[]
+  /** Sent only where the server holds character data for this edition's book, which a look-up then asks for. */
+  characters?: true
 }
 
 export interface Book {
@@ -142,6 +144,135 @@ export function bookImageUrl(
   image: number,
 ): string {
   return `/api/works/${encodeURIComponent(work)}/${encodeURIComponent(edition)}/book/images/${image}`
+}
+
+/**
+ * The longest text the characters route takes, in UTF-16 units, as the server
+ * counts it: a longer one is refused with 400.
+ */
+export const CHARACTERS_TEXT_UNITS = 128
+
+/** The longest text before a tap the characters route takes, in UTF-16 units, refused with 400 as a longer `text` is. */
+export const CHARACTERS_BEFORE_UNITS = 64
+
+/**
+ * How long past the dictionary's outcome a look-up in an edition with
+ * character data holds its first draw for the characters' answer, so that
+ * nothing drawn moves when the cards come; an answer later than this is
+ * dropped for that look-up.
+ */
+export const CARDS_WAIT_MS = 300
+
+/** A character's name, its labels as the book's log gives them. */
+export interface CharacterName {
+  text: string
+  given: string | null
+  surname: string | null
+  title: string | null
+  titleSex: 'male' | 'female' | null
+}
+
+/** A chapter by the titles haiyaku keeps: `chapterTitle` is "" for a chapter its log lacks. */
+export interface ChapterAt {
+  book: string
+  chapter: number
+  chapterTitle: string
+}
+
+/** A fact of a relation; a directed one runs `from` the card's own character (`this`) or the other (`with`). */
+export interface CharacterFact {
+  kind: string
+  from: 'this' | 'with' | null
+  note: string
+  quote: string
+  first: ChapterAt
+  last: ChapterAt
+  /** Where the books read so far took the fact back, if they have. */
+  overturned: { note: string; quote: string; at: ChapterAt } | null
+}
+
+/** A card's character's relation with another, by that one's shown name. */
+export interface CharacterRelation {
+  with: CharacterName
+  facts: CharacterFact[]
+}
+
+/** A character the text names, as of the chapter being read. */
+export interface CharacterCard {
+  name: CharacterName
+  aliases: CharacterName[]
+  /** The name the text matched, and which part of it; `other` for a part this build does not know. */
+  matched: { text: string; part: 'whole' | 'given' | 'surname' | 'other' }
+  first: ChapterAt
+  last: ChapterAt
+  relations: CharacterRelation[]
+}
+
+/** What the characters route answers for a look-up's text. */
+export interface Characters {
+  /** Whether the server holds character data for the book at all. */
+  known: boolean
+  /** The series and order folded in, or null for the book alone. */
+  scope: { series: string; order: string } | null
+  /** Why a series fold fell back to the book alone. */
+  narrowed: 'not-visible' | null
+  /**
+   * Where the characters' name begins, in UTF-16 units from the start of the
+   * `text` asked with: below 0 in the `before` sent with it, above 0 inside
+   * the word `text` starts with, as past a stutter. None sent for 0.
+   */
+  start?: number
+  /** How much of the text the characters' name covers from that start, in UTF-16 units; none sent where no one is named. */
+  length?: number
+  /** A character whose shown name is the name matched before one matched by another of its names; most recently seen first within each. */
+  characters: CharacterCard[]
+}
+
+/**
+ * `text` cut to what the characters route takes, `CHARACTERS_TEXT_UNITS`
+ * UTF-16 units, or one fewer where the last would be the first half of a
+ * pair: `encodeURIComponent` throws on a lone surrogate.
+ */
+export function charactersText(text: string): string {
+  const cut = text.slice(0, CHARACTERS_TEXT_UNITS)
+  const last = cut.charCodeAt(cut.length - 1)
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut
+}
+
+/**
+ * What of `text` before offset `at` the characters route takes as the words
+ * before a tap there: at most `CHARACTERS_BEFORE_UNITS` UTF-16 units, cut to
+ * begin at a word, since the server tries a name from each word's start and
+ * half a word would be tried as one. A word starts after white space, never
+ * inside a pair. Empty where no word starts in reach.
+ */
+export function charactersBefore(text: string, at: number): string {
+  const from = Math.max(0, at - CHARACTERS_BEFORE_UNITS)
+  const cut = text.slice(from, at)
+  const whole = from === 0 || /\s/u.test(text[from - 1])
+  const before = whole ? cut : cut.slice(cut.search(/\s\S/u) + 1 || cut.length)
+  return before.trimStart()
+}
+
+/**
+ * Who `ask.text` names at its start, or the name round that start where
+ * `ask.before`, the words before it, is given; as of block `ask.block` of
+ * `edition`, with its series' earlier books where `ask.earlier`. Async, as
+ * `lookUpWord` is, so a text `encodeURIComponent` refuses rejects as a
+ * failed answer does rather than throwing in the look-up that asked.
+ */
+export async function getCharacters(
+  work: string,
+  edition: string,
+  ask: { block: number; text: string; before?: string; earlier: boolean },
+): Promise<Characters> {
+  // Last, and left out when empty, so a look-up with no words before it asks
+  // as one always has.
+  const before = ask.before ? `&before=${encodeURIComponent(ask.before)}` : ''
+  const query = `block=${ask.block}&text=${encodeURIComponent(ask.text)}&earlier=${ask.earlier ? 1 : 0}${before}`
+  return getJson<Characters>(
+    `/api/works/${encodeURIComponent(work)}/${encodeURIComponent(edition)}/book/characters?${query}`,
+  )
 }
 
 /** The editions in the order a swap cycles through them, the hub first. */

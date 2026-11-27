@@ -356,7 +356,7 @@ fn an_open_that_migrates_backs_the_database_up_first_under_the_version_it_migrat
     );
     assert_eq!(
         taken.before,
-        Some(SCHEMA_VERSION),
+        Some(crate::backup::Before::Taiyaku(SCHEMA_VERSION)),
         "and listed as taken before that version"
     );
     let copy = crate::backup::directory_for(&db).join(&taken.name);
@@ -398,7 +398,7 @@ fn a_database_two_versions_short_is_backed_up_under_this_builds_version() {
     );
     assert_eq!(
         backups[0].before,
-        Some(SCHEMA_VERSION),
+        Some(crate::backup::Before::Taiyaku(SCHEMA_VERSION)),
         "and listed as taken before it"
     );
     let copy = crate::backup::directory_for(&db).join(&backups[0].name);
@@ -873,7 +873,10 @@ fn a_migration_that_keeps_failing_takes_one_backup_while_the_database_is_unchang
         1,
         "the second attempt took no backup of its own: {backups:?}"
     );
-    assert_eq!(backups[0].before, Some(SCHEMA_VERSION));
+    assert_eq!(
+        backups[0].before,
+        Some(crate::backup::Before::Taiyaku(SCHEMA_VERSION))
+    );
 }
 
 /// The README's restore moves a file into place, which keeps its older
@@ -988,13 +991,364 @@ fn a_backup_before_another_version_does_not_stand_for_this_migration() {
 
     let taken: Vec<_> = backups_beside(&db)
         .into_iter()
-        .filter(|backup| backup.before == Some(SCHEMA_VERSION))
+        .filter(|backup| backup.before == Some(crate::backup::Before::Taiyaku(SCHEMA_VERSION)))
         .collect();
     assert_eq!(
         taken.len(),
         1,
         "the open took its own backup before this version: {taken:?}"
     );
+}
+
+/// A database a build from before haiyaku left: taiyaku's schema at this
+/// build's version, made by `migrate` alone on a connection configured as an
+/// open configures one, and no haiyaku table.
+fn from_before_haiyaku(label: &str) -> (crate::tests::TempDir, std::path::PathBuf) {
+    let dir = crate::tests::tempdir(label);
+    let db = dir.path().join("library.db");
+    let mut conn = Connection::open(&db).expect("a file database");
+    crate::Library::configure(&mut conn).expect("configured as an open configures one");
+    migrate(&conn).expect("taiyaku's schema");
+    drop(conn);
+    (dir, db)
+}
+
+fn haiyaku_version(conn: &Connection) -> Option<u32> {
+    haiyaku::store::schema_version(conn).expect("haiyaku's version reads")
+}
+
+fn haiyaku_on_disk(db: &std::path::Path) -> Option<u32> {
+    haiyaku_version(&Connection::open(db).expect("a plain connection"))
+}
+
+fn haiyaku_tables(conn: &Connection) -> Vec<String> {
+    table_names(conn)
+        .into_iter()
+        .filter(|name| name.starts_with("haiyaku_"))
+        .collect()
+}
+
+/// One taiyaku row, written through the store's API.
+fn a_rule(conn: &Connection) -> i64 {
+    crate::rules::create(
+        conn,
+        &crate::rules::NewRule {
+            ordinal: None,
+            enabled: true,
+            root_id: None,
+            kind: crate::rules::RuleKind::Prefix,
+            pattern: "Kept/".to_string(),
+            match_on: crate::rules::MatchOn::Path,
+            set_edition_key: None,
+            set_kind: None,
+            set_language: None,
+            set_series: None,
+            note: None,
+        },
+    )
+    .expect("a rule written")
+}
+
+fn holds_rule(conn: &Connection, id: i64) -> bool {
+    crate::rules::read(conn)
+        .expect("the rules read")
+        .0
+        .iter()
+        .any(|rule| rule.id == id)
+}
+
+#[test]
+fn opening_makes_haiyakus_tables_at_its_version() {
+    let in_memory = crate::Library::open_in_memory().expect("an in-memory open");
+    assert_eq!(
+        haiyaku_version(&in_memory.conn()),
+        Some(haiyaku::store::SCHEMA_VERSION),
+        "in memory"
+    );
+    let dir = crate::tests::tempdir("haiyaku-tables");
+    let on_file = crate::Library::open(&dir.path().join("library.db")).expect("a file open");
+    assert_eq!(
+        haiyaku_version(&on_file.conn()),
+        Some(haiyaku::store::SCHEMA_VERSION),
+        "on file"
+    );
+    assert_eq!(in_memory.cards_off(), None, "cards are on in memory");
+    assert_eq!(on_file.cards_off(), None, "and on file");
+}
+
+#[test]
+fn reopening_a_library_leaves_haiyakus_tables_as_they_were() {
+    let dir = crate::tests::tempdir("haiyaku-reopen");
+    let db = dir.path().join("library.db");
+    let (version, tables) = {
+        let first = crate::Library::open(&db).expect("the first open");
+        let conn = first.conn();
+        (haiyaku_version(&conn), haiyaku_tables(&conn))
+    };
+    assert_eq!(
+        version,
+        Some(haiyaku::store::SCHEMA_VERSION),
+        "the first open made haiyaku's tables"
+    );
+
+    let second = crate::Library::open(&db).expect("the second open");
+
+    let conn = second.conn();
+    assert_eq!(haiyaku_version(&conn), version, "the version is as it was");
+    assert_eq!(haiyaku_tables(&conn), tables, "and so are the tables");
+    let backups = backups_beside(&db);
+    assert!(
+        backups.is_empty(),
+        "nothing was pending, so nothing was backed up: {backups:?}"
+    );
+}
+
+/// A later haiyaku wrote the file. Cards go off saying which versions
+/// disagree, the library opens with its data as it was, and nothing of
+/// haiyaku's is written or backed up: there is nothing this build can migrate.
+#[test]
+fn a_haiyaku_schema_newer_than_this_build_leaves_the_library_open_and_cards_off() {
+    let dir = crate::tests::tempdir("haiyaku-newer");
+    let db = dir.path().join("library.db");
+    let rule = a_rule(&crate::Library::open(&db).expect("a new library").conn());
+    let conn = Connection::open(&db).expect("a plain connection");
+    haiyaku::store::migrate(&conn).expect("haiyaku's tables");
+    conn.execute("UPDATE haiyaku_schema SET version = 3", [])
+        .expect("a later haiyaku's version");
+    drop(conn);
+
+    let library = crate::Library::open(&db).expect("the library opens");
+
+    let off = library.cards_off().unwrap_or_default();
+    assert!(
+        off.contains("version 3") && off.contains("version 2"),
+        "cards are off, naming both versions: {off:?}"
+    );
+    let conn = library.conn();
+    assert!(holds_rule(&conn, rule), "the taiyaku row reads back");
+    assert_eq!(
+        haiyaku_version(&conn),
+        Some(3),
+        "the stored version is as it was"
+    );
+    let backups = backups_beside(&db);
+    assert!(backups.is_empty(), "and nothing was backed up: {backups:?}");
+}
+
+#[test]
+fn a_library_from_before_haiyaku_is_backed_up_before_its_tables_are_made() {
+    let (_dir, db) = from_before_haiyaku("haiyaku-backup");
+
+    let library = crate::Library::open(&db).expect("the open makes haiyaku's tables");
+
+    let backups = backups_beside(&db);
+    assert_eq!(backups.len(), 1, "the open took one backup: {backups:?}");
+    assert!(
+        backups[0].name.ends_with("-before-haiyaku-v2.db"),
+        "named for haiyaku's version: {}",
+        backups[0].name
+    );
+    assert_eq!(
+        backups[0].before,
+        Some(crate::backup::Before::Haiyaku(2)),
+        "and listed as taken before it"
+    );
+    let copy = Connection::open_with_flags(
+        crate::backup::directory_for(&db).join(&backups[0].name),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("the backup opens");
+    assert_eq!(
+        haiyaku_version(&copy),
+        None,
+        "the backup holds the library without haiyaku's tables"
+    );
+    assert_eq!(
+        haiyaku_version(&library.conn()),
+        Some(2),
+        "while the library has them"
+    );
+}
+
+/// The no-backup claim holds only if haiyaku's migrate ran, so that comes
+/// first.
+#[test]
+fn a_new_library_takes_no_backup_for_haiyaku() {
+    let dir = crate::tests::tempdir("haiyaku-new");
+    let db = dir.path().join("library.db");
+
+    let library = crate::Library::open(&db).expect("a new library");
+
+    assert_eq!(
+        haiyaku_version(&library.conn()),
+        Some(haiyaku::store::SCHEMA_VERSION),
+        "haiyaku's tables were made"
+    );
+    let backups = backups_beside(&db);
+    assert!(
+        backups.is_empty(),
+        "a new file has nothing to back up: {backups:?}"
+    );
+}
+
+/// With taiyaku's migrations pending too, the one backup taiyaku takes holds
+/// the library before either migration.
+#[test]
+fn one_backup_before_both_migrations_is_named_for_taiyakus() {
+    let (_dir, db) = one_version_short("haiyaku-and-taiyaku");
+
+    crate::Library::open(&db).expect("the open migrates both");
+
+    let backups = backups_beside(&db);
+    assert_eq!(backups.len(), 1, "one backup: {backups:?}");
+    assert_eq!(
+        backups[0].before,
+        Some(crate::backup::Before::Taiyaku(SCHEMA_VERSION)),
+        "named for taiyaku's migration"
+    );
+    assert_eq!(
+        haiyaku_on_disk(&db),
+        Some(2),
+        "and haiyaku's tables were made after it"
+    );
+}
+
+/// haiyaku's migration 2 rebuilds `haiyaku_event`, so a version table holding
+/// 1 beside no other haiyaku table fails it on every start. As with taiyaku's
+/// (O263), the backup taken on the first start stands for the next while the
+/// library is unchanged.
+#[test]
+fn a_haiyaku_migration_that_keeps_failing_is_backed_up_once() {
+    let (_dir, db) = from_before_haiyaku("haiyaku-restart-loop");
+    Connection::open(&db)
+        .expect("a plain connection")
+        .execute_batch(
+            "CREATE TABLE haiyaku_schema (version INTEGER NOT NULL);
+             INSERT INTO haiyaku_schema (version) VALUES (1);",
+        )
+        .expect("haiyaku at version 1 with none of its tables");
+
+    let start = |which: &str| {
+        let library = crate::Library::open(&db).expect("the library opens");
+        let off = library.cards_off().unwrap_or_default();
+        assert!(
+            off.contains("haiyaku_event"),
+            "the {which} start has cards off, for the failed migration: {off:?}"
+        );
+    };
+    start("first");
+    wait_for_the_next_second();
+    start("second");
+
+    let taken: Vec<_> = backups_beside(&db)
+        .into_iter()
+        .filter(|backup| backup.before == Some(crate::backup::Before::Haiyaku(2)))
+        .collect();
+    assert_eq!(
+        taken.len(),
+        1,
+        "the second start took no backup of its own: {taken:?}"
+    );
+}
+
+/// A failed haiyaku backup costs the cards, not the library: haiyaku's tables
+/// are not made without it, and it is why cards are off.
+#[test]
+fn a_haiyaku_backup_that_cannot_be_taken_leaves_the_library_open_and_cards_off() {
+    let (_dir, db) = from_before_haiyaku("haiyaku-backup-fails");
+    let rule = a_rule(&Connection::open(&db).expect("a plain connection"));
+    std::fs::write(
+        crate::backup::directory_for(&db),
+        "a file where the directory goes",
+    )
+    .expect("the backups directory made a plain file");
+
+    let library = crate::Library::open(&db).expect("the library opens");
+
+    let off = library.cards_off().unwrap_or_default();
+    assert!(
+        off.contains("-before-haiyaku-v2.db could not be taken"),
+        "cards are off, naming the backup: {off:?}"
+    );
+    let conn = library.conn();
+    assert_eq!(
+        haiyaku_version(&conn),
+        None,
+        "haiyaku's tables were not made without it"
+    );
+    assert!(holds_rule(&conn, rule), "the taiyaku row reads back");
+}
+
+/// An empty file reads as a database without haiyaku's tables, as a library
+/// from before haiyaku does, so under a haiyaku backup's name it would stand
+/// for one unless the copy has to open as a library (O263's cut copy).
+#[test]
+fn an_empty_file_under_a_haiyaku_backups_name_does_not_stand_for_the_library() {
+    let (_dir, db) = from_before_haiyaku("haiyaku-cut-copy");
+    let backups = crate::backup::directory_for(&db);
+    std::fs::create_dir_all(&backups).expect("the backups directory");
+    let cut = "library-20261111T000000Z-before-haiyaku-v2.db";
+    std::fs::write(backups.join(cut), b"").expect("a cut copy under a backup's name");
+
+    crate::Library::open(&db).expect("the open makes haiyaku's tables");
+
+    let taken: Vec<_> = backups_beside(&db)
+        .into_iter()
+        .filter(|backup| backup.name != cut)
+        .collect();
+    assert_eq!(
+        taken.len(),
+        1,
+        "the open took a backup of its own: {taken:?}"
+    );
+}
+
+/// A database nobody has migrated reads as taiyaku's 0 and, with no haiyaku
+/// table, as haiyaku's 0, so under a haiyaku backup's name it would stand for
+/// a library from before haiyaku unless the copy has to be past taiyaku's 0.
+#[test]
+fn a_database_nobody_migrated_under_a_haiyaku_backups_name_does_not_stand_for_the_library() {
+    let (_dir, db) = from_before_haiyaku("haiyaku-unmigrated-copy");
+    let backups = crate::backup::directory_for(&db);
+    std::fs::create_dir_all(&backups).expect("the backups directory");
+    let unmigrated = "library-20261111T000000Z-before-haiyaku-v2.db";
+    ensure_meta(
+        &Connection::open(backups.join(unmigrated)).expect("a database under a backup's name"),
+    )
+    .expect("a meta table holding no version, as an open leaves it before migration 1");
+
+    crate::Library::open(&db).expect("the open makes haiyaku's tables");
+
+    let taken: Vec<_> = backups_beside(&db)
+        .into_iter()
+        .filter(|backup| backup.name != unmigrated)
+        .collect();
+    assert_eq!(
+        taken.len(),
+        1,
+        "the open took a backup of its own: {taken:?}"
+    );
+}
+
+/// A whole copy of a library from before haiyaku holds no haiyaku table,
+/// which is haiyaku's 0, so it stands for the library: read as no version
+/// rather than 0, it would stand for nothing, and a haiyaku migration that
+/// keeps failing would back up on every start.
+#[test]
+fn a_whole_copy_of_a_library_from_before_haiyaku_stands_for_it() {
+    let (_dir, db) = from_before_haiyaku("haiyaku-whole-copy");
+    let backups = crate::backup::directory_for(&db);
+    std::fs::create_dir_all(&backups).expect("the backups directory");
+    let copy = "library-20261111T000000Z-before-haiyaku-v2.db";
+    std::fs::copy(&db, backups.join(copy)).expect("a whole copy under a backup's name");
+
+    crate::Library::open(&db).expect("the open makes haiyaku's tables");
+
+    let names: Vec<String> = backups_beside(&db)
+        .into_iter()
+        .map(|backup| backup.name)
+        .collect();
+    assert_eq!(names, [copy], "the open took no backup of its own");
 }
 
 fn table_names(conn: &Connection) -> Vec<String> {

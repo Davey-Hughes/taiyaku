@@ -9,12 +9,14 @@ import {
   vi,
 } from 'vitest'
 import { lookUpAt } from '../src/api'
-import { bookImageUrl } from '../src/book'
+import { bookImageUrl, CARDS_WAIT_MS, type CharacterCard } from '../src/book'
 import { selectionIn } from '../src/bookNotes'
 import { BookReader, Sentences } from '../src/BookReader'
 import { GateContext, type Gated } from '../src/gate'
+import { lookupModule } from '../src/modules/lookup'
 import type { Note } from '../src/notes'
 import { deferred, flush, land } from './support/async'
+import { ADA, MARA, NED, naming } from './support/characters'
 import './support/dialog'
 import { typeInto } from './support/input'
 import { mount, rerender } from './support/mount'
@@ -2561,7 +2563,7 @@ describe('BookReader', () => {
       expect(button()?.getAttribute('aria-pressed')).toBe('true')
       expect(
         JSON.parse(localStorage.getItem('taiyaku.prefs.lookup') ?? '{}'),
-      ).toEqual({ on: true })
+      ).toEqual({ on: true, includeEarlierBooks: true })
       act(() => button()?.click())
       expect(button()?.getAttribute('aria-pressed')).toBe('false')
       act(() => button()?.click())
@@ -3335,7 +3337,10 @@ describe('BookReader', () => {
       expect(JSON.parse(mode() ?? '{}').on).not.toBe(true)
       press('Escape')
       press('l')
-      expect(JSON.parse(mode() ?? '{}')).toEqual({ on: true })
+      expect(JSON.parse(mode() ?? '{}')).toEqual({
+        on: true,
+        includeEarlierBooks: true,
+      })
     })
 
     it('lists the keys of finding and looking up once each in Help', async () => {
@@ -3418,6 +3423,765 @@ describe('BookReader', () => {
       expect(written.at(-1)?.notes).toMatchObject([
         { edition: 'en', slot: 1, text: { start: 0, end: 3 } },
       ])
+    })
+
+    describe('the characters a look-up asks for', () => {
+      const para = (text: string) => ({
+        text,
+        heading: false,
+        sentences: [[0, text.length]],
+      })
+      /** Its second word, `Ned`, starts at 5 and runs on 183 units, the 128th a letter. */
+      const RUN = `Then Ned Reed kept the lamp${' and kept it burning'.repeat(8)}.`
+      /** Its second word, `Ned`, starts at 5, the 128th unit from there the first half of 😀. */
+      const PAIR = `Then ${'Ned Reed waited'.padEnd(127, '.')}😀 and left.`
+      /** `ko` the hub and `en` beside it, block for block, `en` alone with character data. */
+      const cast = {
+        title: 'The Lamp',
+        hub: 'ko',
+        editions: {
+          ko: {
+            label: 'Korean',
+            language: 'ko',
+            blocks: [
+              { text: '하나', heading: true, sentences: [[0, 2]] },
+              para('에이다가 등불을 켰다.'),
+              para('그때 네드 리드가 등불을 지켰다.'),
+              para('에이다는 네드 리드를 보았다.'),
+              para('그는 기다리다 떠났다.'),
+              para('마라 벨이 돌아왔다.'),
+              para('느-느-네드 리드가 들어왔다.'),
+            ],
+          },
+          en: {
+            label: 'English',
+            language: 'en',
+            characters: true,
+            blocks: [
+              { text: 'One', heading: true, sentences: [[0, 3]] },
+              para('Ada lit the lamp.'),
+              para(RUN),
+              para('Ada saw Ned Reed go.'),
+              para(PAIR),
+              para('Mara Vell came back.'),
+              para('N-N-Ned Reed came in.'),
+            ],
+          },
+        },
+        alignments: [
+          {
+            to: 'en',
+            pins: [],
+            links: [0, 1, 2, 3, 4, 5, 6].map((b) => [b, b + 1, b, b + 1]),
+            sentences: [0, 1, 2, 3, 4, 5, 6].map((b) => [b, b + 1, b, b + 1]),
+          },
+        ],
+      }
+      const inEnglish = { edition: 'en', slot: 0 }
+      /** The address a tap in `edition`'s block `block`, the words `before` it, asks the characters route at. */
+      const asksFor = (
+        edition: string,
+        block: number,
+        text: string,
+        earlier: 0 | 1,
+        before: string,
+      ) =>
+        `/api/works/w/${edition}/book/characters?block=${block}&text=${encodeURIComponent(text)}&earlier=${earlier}&before=${encodeURIComponent(before)}`
+      /** `RUN` from `Ned` on, cut to 128 units. */
+      const fromNed = RUN.slice(5, 5 + 128)
+
+      /**
+       * The reader on `sent`, at `saved` where given, its server answering a
+       * word with `answers.dictionary` or else `who`, a longest word with two
+       * characters, and the characters route with `answers.characters` for
+       * the text asked or else a book haiyaku holds that names no one.
+       * `asked` lists the dictionary's requests as `reader`'s does, and
+       * `characters` the characters route's addresses.
+       */
+      async function withCharacters(
+        sent: unknown,
+        saved?: { edition: string; slot: number },
+        answers: {
+          characters?: (text: string) => Response | Promise<Response>
+          dictionary?: () => Response | Promise<Response>
+        } = {},
+      ) {
+        const { fetch } = server(saved, sent)
+        const answer = fetch.getMockImplementation()
+        const asked: string[] = []
+        fetch.mockImplementation((url: string, init?: RequestInit) => {
+          if (url.includes('/book/characters?')) {
+            const text = new URL(url, 'http://reader').searchParams.get('text')
+            return Promise.resolve(
+              answers.characters?.(text ?? '') ?? Response.json(naming()),
+            )
+          }
+          const found = url.match(/^\/api\/dictionary\/([^/]+)\/(at\/)?(.+)$/)
+          if (!found) return answer?.(url, init) as Promise<Response>
+          asked.push(
+            `${found[1]}:${found[2] ? 'at:' : ''}${decodeURIComponent(found[3])}`,
+          )
+          return Promise.resolve(
+            found[2]
+              ? Response.json({ length: 2, entries: [who] })
+              : (answers.dictionary?.() ?? Response.json([who])),
+          )
+        })
+        vi.stubGlobal('fetch', fetch)
+        Element.prototype.scrollIntoView = vi.fn()
+        const host = mount(<BookReader work="w" onLeave={vi.fn()} />)
+        await land()
+        const characters = () =>
+          fetch.mock.calls
+            .map(([url]) => url)
+            .filter((url) => url.includes('/book/characters'))
+        return { host, asked, characters }
+      }
+
+      it('asks for the characters a tapped word names, from the word on, with the words before it and the earlier books', async () => {
+        on()
+        const { host, characters } = await withCharacters(cast, inEnglish)
+        await tapOn(host, 2, 6)
+        expect(characters()).toEqual([asksFor('en', 2, fromNed, 1, 'Then ')])
+      })
+
+      it('sends no words before a tap on a block’s first word', async () => {
+        on()
+        const { host, characters } = await withCharacters(cast, inEnglish)
+        await tapOn(host, 1, 1)
+        expect(characters()).toEqual([
+          '/api/works/w/en/book/characters?block=1&text=Ada%20lit%20the%20lamp.&earlier=1',
+        ])
+      })
+
+      it('sends the words before a tap far into a block from a word’s start, 64 units at most', async () => {
+        on()
+        const { host, characters } = await withCharacters(cast, inEnglish)
+        const last = RUN.lastIndexOf('burning')
+        await tapOn(host, 2, last + 1)
+        expect(characters()).toEqual([
+          asksFor(
+            'en',
+            2,
+            'burning.',
+            1,
+            `it burning${' and kept it burning'.repeat(2)} and kept it `,
+          ),
+        ])
+      })
+
+      it('cuts the text at 128 units without splitting a character outside the BMP', async () => {
+        on()
+        const { host, characters } = await withCharacters(cast, inEnglish)
+        await tapOn(host, 4, 6)
+        expect(characters()).toEqual([
+          asksFor('en', 4, PAIR.slice(5, 5 + 127), 1, 'Then '),
+        ])
+      })
+
+      it('asks with the selection bar’s text and the block it starts in, and no words before it', async () => {
+        const { host, characters } = await withCharacters(cast, inEnglish)
+        await lookUpFromBar(host, 3, 8, 16)
+        expect(characters()).toEqual([
+          '/api/works/w/en/book/characters?block=3&text=Ned%20Reed&earlier=1',
+        ])
+      })
+
+      it('asks nothing of a book edition without character data', async () => {
+        on()
+        const { host, asked, characters } = await withCharacters(cast)
+        await tapOn(host, 2, 4)
+        expect(asked).toEqual(['ko:네드'])
+        expect(characters()).toEqual([])
+      })
+
+      it('draws neither the cards nor the widened light of a look-up before it in a book edition without character data', async () => {
+        on()
+        const { host, characters } = await withCharacters(cast, inEnglish, {
+          characters: () => Response.json({ ...naming(NED), length: 8 }),
+        })
+        await tapOn(host, 2, 6)
+        expect(cardsDrawn()).toEqual(['Ned Reed'])
+        expect(selectedText()).toBe('Ned Reed')
+        press(' ')
+        await land()
+        expect(edition(host)).toBe('하나')
+        await tapOn(host, 2, 4)
+        expect(lookUpTitle()).toBe('네드')
+        expect(cardsDrawn()).toEqual([])
+        expect(selectedText()).toBe('네드')
+        expect(characters()).toHaveLength(1)
+      })
+
+      it('asks once for a Japanese tap, after its longest word too', async () => {
+        on()
+        const { host, characters } = await withCharacters({
+          ...japanese,
+          editions: { ja: { ...japanese.editions.ja, characters: true } },
+        })
+        await tapOn(host, 1, 3)
+        expect(lookUpTitle()).toBe('猫で')
+        expect(characters()).toEqual([
+          asksFor('ja', 1, '猫である。名前はまだ無い。', 1, '吾輩は'),
+        ])
+      })
+
+      it('includes the earlier books by default and asks without them once the setting is off', async () => {
+        expect(lookupModule.defaults.includeEarlierBooks).toBe(true)
+        localStorage.setItem(
+          'taiyaku.prefs.lookup',
+          JSON.stringify({ on: true, includeEarlierBooks: false }),
+        )
+        const off = await withCharacters(cast, inEnglish)
+        await tapOn(off.host, 2, 6)
+        expect(off.characters()).toEqual([
+          asksFor('en', 2, fromNed, 0, 'Then '),
+        ])
+        // A slice stored by a build without the setting.
+        localStorage.setItem(
+          'taiyaku.prefs.lookup',
+          JSON.stringify({ on: true }),
+        )
+        const before = await withCharacters(cast, inEnglish)
+        await tapOn(before.host, 2, 6)
+        expect(before.characters()).toEqual([
+          asksFor('en', 2, fromNed, 1, 'Then '),
+        ])
+      })
+
+      it('asks without the earlier books on the next tap once the setting is turned off in the session', async () => {
+        on()
+        const { host, characters } = await withCharacters(cast, inEnglish)
+        await tapOn(host, 2, 6)
+        expect(characters()).toEqual([asksFor('en', 2, fromNed, 1, 'Then ')])
+        press('s')
+        const box = [...host.querySelectorAll('[aria-label="Settings"] label')]
+          .find((label) => label.textContent === 'include earlier books')
+          ?.querySelector<HTMLInputElement>('input[type="checkbox"]')
+        expect(box?.checked).toBe(true)
+        act(() => box?.click())
+        press('Escape')
+        await tapOn(host, 2, 6)
+        expect(characters()).toEqual([
+          asksFor('en', 2, fromNed, 1, 'Then '),
+          asksFor('en', 2, fromNed, 0, 'Then '),
+        ])
+      })
+
+      /** The cards the look-up draws, by their headings. */
+      const cardsDrawn = () =>
+        [...(panel()?.querySelectorAll('.book-lookup-character h3') ?? [])].map(
+          (heading) => heading.textContent,
+        )
+      const entriesDrawn = () => [
+        ...(panel()?.querySelectorAll('.book-lookup-entry') ?? []),
+      ]
+      /** The clock the hold's wait runs on, run by hand from here. */
+      const stopClock = () =>
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const elapse = async (ms: number) => {
+        await act(async () => {
+          vi.advanceTimersByTime(ms)
+        })
+      }
+
+      it('holds the first draw until the characters are in', async () => {
+        on()
+        const characters = deferred<Response>()
+        const { host } = await withCharacters(cast, inEnglish, {
+          characters: () => characters.promise,
+        })
+        stopClock()
+        await tapOn(host, 2, 6)
+        await elapse(CARDS_WAIT_MS - 1)
+        expect(entriesDrawn()).toEqual([])
+        await flush(() => characters.resolve(Response.json(naming(NED))))
+        await land()
+        expect(cardsDrawn()).toEqual(['Ned Reed'])
+        const [entry] = entriesDrawn()
+        if (!entry) throw new Error('no entry drawn')
+        const card = panel()?.querySelector('.book-lookup-character')
+        expect(
+          card &&
+            card.compareDocumentPosition(entry) &
+              Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy()
+      })
+
+      it('holds the first draw until the dictionary is in too when the characters come first', async () => {
+        on()
+        const dictionary = deferred<Response>()
+        const { host } = await withCharacters(cast, inEnglish, {
+          characters: () => Response.json(naming(NED)),
+          dictionary: () => dictionary.promise,
+        })
+        stopClock()
+        await tapOn(host, 2, 6)
+        expect(cardsDrawn()).toEqual([])
+        await flush(() => dictionary.resolve(Response.json([who])))
+        await land()
+        expect(cardsDrawn()).toEqual(['Ned Reed'])
+        expect(entriesDrawn()).toHaveLength(1)
+      })
+
+      it('draws the dictionary when the characters miss the wait, and a late answer then moves nothing', async () => {
+        on()
+        const characters = deferred<Response>()
+        const { host } = await withCharacters(cast, inEnglish, {
+          characters: () => characters.promise,
+        })
+        stopClock()
+        await tapOn(host, 2, 6)
+        await elapse(CARDS_WAIT_MS - 1)
+        expect(entriesDrawn()).toEqual([])
+        await elapse(1)
+        const [entry] = entriesDrawn()
+        expect(entry).toBeDefined()
+        await flush(() => characters.resolve(Response.json(naming(NED))))
+        await land()
+        expect(cardsDrawn()).toEqual([])
+        expect(entriesDrawn()[0]).toBe(entry)
+      })
+
+      it('draws the dictionary alone when the characters fail, and logs the failure', async () => {
+        on()
+        const { host } = await withCharacters(cast, inEnglish, {
+          characters: () => new Response('the store broke', { status: 500 }),
+        })
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        stopClock()
+        await tapOn(host, 2, 6)
+        expect(entriesDrawn()).toHaveLength(1)
+        expect(cardsDrawn()).toEqual([])
+        expect(document.body.textContent).not.toContain('the store broke')
+        expect(warn).toHaveBeenCalledOnce()
+        expect(String(warn.mock.calls[0]?.[1])).toContain('500 the store broke')
+      })
+
+      it('a later tap’s panel never draws an earlier tap’s cards', async () => {
+        on()
+        const ned = deferred<Response>()
+        const { host } = await withCharacters(cast, inEnglish, {
+          characters: (text) =>
+            text.startsWith('Ned') ? ned.promise : Response.json(naming(MARA)),
+        })
+        stopClock()
+        await tapOn(host, 2, 6)
+        await tapOn(host, 5, 1)
+        expect(cardsDrawn()).toEqual(['Mara Vell'])
+        await flush(() => ned.resolve(Response.json(naming(NED))))
+        await land()
+        expect(cardsDrawn()).toEqual(['Mara Vell'])
+      })
+
+      it('a book without character data draws the dictionary at once', async () => {
+        on()
+        const { host } = await withCharacters(cast)
+        stopClock()
+        await tapOn(host, 2, 4)
+        expect(entriesDrawn()).toHaveLength(1)
+      })
+
+      describe('the light and the marks while a card shows', () => {
+        /** The characters route naming `cards` by a name `name.length` units long from `name.start`. */
+        const answered = (
+          cards: CharacterCard[],
+          name: { start?: number; length?: number } = {},
+        ) => Response.json({ ...naming(...cards), ...name })
+        /**
+         * `cast`, its Korean edition writing the name in block 3 in the
+         * letters the card has it in, and holding character data where
+         * `flagged`.
+         */
+        const lettered = (flagged: boolean) => ({
+          ...cast,
+          editions: {
+            ...cast.editions,
+            ko: {
+              ...cast.editions.ko,
+              characters: flagged,
+              blocks: cast.editions.ko.blocks.map((block, i) =>
+                i === 3 ? para('에이다는 Ned Reed 씨를 보았다.') : block,
+              ),
+            },
+          },
+        })
+        const bySurname = (card: CharacterCard): CharacterCard => ({
+          ...card,
+          matched: { text: card.name.text, part: 'surname' },
+        })
+
+        /**
+         * A browser's custom highlights, which jsdom has none of. `marked`
+         * is what is set under a name, each range as its block and the words
+         * it covers, `gone:` before one whose text is no longer drawn.
+         */
+        function highlights() {
+          const marks = new Map<string, { ranges: Range[] }>()
+          vi.stubGlobal('CSS', { highlights: marks })
+          vi.stubGlobal(
+            'Highlight',
+            class {
+              readonly ranges: Range[]
+              constructor(...ranges: Range[]) {
+                this.ranges = ranges
+              }
+            },
+          )
+          const marked = (name: string) =>
+            (marks.get(name)?.ranges ?? []).map((range) => {
+              const at = range.startContainer
+              const block =
+                at.parentElement?.closest<HTMLElement>('[data-block]')
+              return `${at.isConnected ? '' : 'gone:'}${block?.dataset.block}:${range}`
+            })
+          return { marks, marked }
+        }
+
+        /**
+         * The text 800 px tall and each block 500 px of it in turn, scrolled
+         * `top` px down: at 0 the blocks within a screen of it are 0 to 3.
+         * Answers what scrolls it, as a browser would.
+         */
+        function laidOut(host: HTMLElement) {
+          let top = 0
+          const box = (y: number, height: number, width: number) =>
+            ({
+              left: 0,
+              right: width,
+              width,
+              top: y,
+              bottom: y + height,
+              height,
+            }) as DOMRect
+          vi.spyOn(
+            Element.prototype,
+            'getBoundingClientRect',
+          ).mockImplementation(function (this: Element) {
+            if (this.classList.contains('book-text')) return box(0, 800, 600)
+            const block = (this as HTMLElement).dataset?.block
+            if (block !== undefined) {
+              return box(Number(block) * 500 - top, 500, 600)
+            }
+            // A figure takes no room, at the top of the block it is set before.
+            const next = (this.nextElementSibling as HTMLElement | null)
+              ?.dataset?.block
+            return next === undefined
+              ? box(0, 0, 0)
+              : box(Number(next) * 500 - top, 0, 600)
+          })
+          return (to: number) => {
+            top = to
+            act(() => {
+              host
+                .querySelector('.book-text')
+                ?.dispatchEvent(new Event('scroll'))
+            })
+          }
+        }
+
+        /** The frames asked for and not yet drawn, run when a test says. */
+        function frames() {
+          const waiting = new Map<number, FrameRequestCallback>()
+          let asked = 0
+          vi.spyOn(window, 'requestAnimationFrame').mockImplementation(
+            (run) => {
+              waiting.set(++asked, run)
+              return asked
+            },
+          )
+          vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+            waiting.delete(id)
+          })
+          return {
+            asked: () => asked,
+            run: () =>
+              act(() => {
+                const due = [...waiting.values()]
+                waiting.clear()
+                for (const draw of due) draw(0)
+              }),
+          }
+        }
+
+        it('lights the word tapped until the cards say how far the name runs, then the whole name', async () => {
+          on()
+          const { marked } = highlights()
+          const characters = deferred<Response>()
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => characters.promise,
+          })
+          stopClock()
+          await tapOn(host, 2, 6)
+          expect(selectedText()).toBe('Ned')
+          expect(marked('book-lookup-word')).toEqual(['2:Ned'])
+          await flush(() => characters.resolve(answered([NED], { length: 8 })))
+          await land()
+          expect(selectedText()).toBe('Ned Reed')
+          expect(marked('book-lookup-word')).toEqual(['2:Ned Reed'])
+        })
+
+        it('lights back over the words before the tap where the name begins there', async () => {
+          on()
+          const { marked } = highlights()
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => answered([NED], { start: -4, length: 8 }),
+          })
+          await tapOn(host, 3, 13)
+          expect(lookUpTitle()).toBe('Reed')
+          expect(selectedText()).toBe('Ned Reed')
+          expect(marked('book-lookup-word')).toEqual(['3:Ned Reed'])
+        })
+
+        it('lights a name that begins past a stutter with the word tapped, all of both', async () => {
+          on()
+          const { marked } = highlights()
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => answered([NED], { start: 4, length: 8 }),
+          })
+          await tapOn(host, 6, 5)
+          expect(lookUpTitle()).toBe('N-N-Ned')
+          expect(selectedText()).toBe('N-N-Ned Reed')
+          expect(marked('book-lookup-word')).toEqual(['6:N-N-Ned Reed'])
+        })
+
+        it('never lights less than the word tapped, nor from before its block', async () => {
+          on()
+          const names = [{ length: 2 }, { start: -99, length: 8 }]
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => answered([NED], names.shift()),
+          })
+          await tapOn(host, 2, 6)
+          expect(selectedText()).toBe('Ned')
+          press('Escape')
+          await tapOn(host, 2, 6)
+          expect(selectedText()).toBe('Then Ned')
+        })
+
+        it('lights the word alone where the answer names no one, or comes after the wait', async () => {
+          on()
+          const late = deferred<Response>()
+          const answers = [answered([], { length: 8 }), late.promise]
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => answers.shift() as Response | Promise<Response>,
+          })
+          await tapOn(host, 2, 6)
+          expect(selectedText()).toBe('Ned')
+          press('Escape')
+          stopClock()
+          await tapOn(host, 2, 6)
+          await elapse(CARDS_WAIT_MS)
+          await flush(() => late.resolve(answered([NED], { length: 8 })))
+          await land()
+          expect(entriesDrawn()).toHaveLength(1)
+          expect(selectedText()).toBe('Ned')
+        })
+
+        it('keeps the name marked as a highlight of its own while the look-up is open, whatever is selected, and lets it go as it closes', async () => {
+          on()
+          const { marks, marked } = highlights()
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => answered([NED], { length: 8 }),
+          })
+          await tapOn(host, 2, 6)
+          select(host, 1, 0, 3)
+          await land()
+          expect(marked('book-lookup-word')).toEqual(['2:Ned Reed'])
+          expect(selectedText()).toBe('Ada')
+          press('Escape')
+          expect(panel()).toBeNull()
+          expect(marks.has('book-lookup-word')).toBe(false)
+        })
+
+        it('lights nothing when the dictionary answers a hold after the look-up has closed', async () => {
+          on()
+          const { marks } = highlights()
+          const dictionary = deferred<Response>()
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => answered([NED], { length: 8 }),
+            dictionary: () => dictionary.promise,
+          })
+          stopClock()
+          await tapOn(host, 2, 6)
+          expect(selectedText()).toBe('Ned')
+          press('Escape')
+          expect(panel()).toBeNull()
+          await flush(() => dictionary.resolve(Response.json([who])))
+          await land()
+          expect(selectedText()).toBe('')
+          expect(marks.has('book-lookup-word')).toBe(false)
+        })
+
+        it('marks the other places near the screen that name the card’s character, and not the name lit', async () => {
+          on()
+          const { marked } = highlights()
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => answered([NED], { length: 8 }),
+          })
+          laidOut(host)
+          await tapOn(host, 2, 6)
+          expect(cardsDrawn()).toEqual(['Ned Reed'])
+          expect(marked('book-mention')).toEqual(['3:Ned Reed'])
+        })
+
+        it('passes over a figure set between two blocks near the screen', async () => {
+          on()
+          const { marked } = highlights()
+          const figured = {
+            ...cast,
+            editions: {
+              ...cast.editions,
+              en: {
+                ...cast.editions.en,
+                figures: [{ before: 3, image: 1, alt: 'a lamp' }],
+              },
+            },
+          }
+          const { host } = await withCharacters(figured, inEnglish, {
+            characters: () => answered([NED], { length: 8 }),
+          })
+          laidOut(host)
+          await tapOn(host, 2, 6)
+          expect(
+            host.querySelector('.book-text > [data-block="2"]')
+              ?.nextElementSibling?.tagName,
+          ).toBe('FIGURE')
+          expect(marked('book-mention')).toEqual(['3:Ned Reed'])
+        })
+
+        it('marks what of a name the light on the word leaves', async () => {
+          on()
+          const { marked } = highlights()
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => answered([NED]),
+          })
+          laidOut(host)
+          await tapOn(host, 3, 13)
+          expect(marked('book-lookup-word')).toEqual(['3:Reed'])
+          expect(marked('book-mention')).toEqual(['2:Ned Reed', '3:Ned'])
+        })
+
+        it('marks the mentions for a look-up from the selection bar, which lights no word of its own', async () => {
+          const { marks, marked } = highlights()
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => answered([NED]),
+          })
+          laidOut(host)
+          await lookUpFromBar(host, 3, 8, 16)
+          expect(cardsDrawn()).toEqual(['Ned Reed'])
+          expect(marked('book-mention')).toEqual(['2:Ned Reed', '3:Ned Reed'])
+          expect(marks.has('book-lookup-word')).toBe(false)
+        })
+
+        it('marks nothing in an edition swapped to after a look-up from the selection bar, though that edition’s own look-up marks the name there', async () => {
+          const { marks, marked } = highlights()
+          const { host } = await withCharacters(lettered(true), inEnglish, {
+            characters: () => answered([NED]),
+          })
+          laidOut(host)
+          await lookUpFromBar(host, 3, 8, 16)
+          expect(marked('book-mention')).toEqual(['2:Ned Reed', '3:Ned Reed'])
+          press(' ')
+          await land()
+          expect([...marks.keys()]).toEqual([])
+          await lookUpFromBar(host, 3, 5, 13)
+          expect(lookUpTitle()).toBe('Ned Reed')
+          expect(marked('book-mention')).toEqual(['3:Ned Reed'])
+        })
+
+        it('marks again as a scroll brings another block near, once a frame, and not for a scroll that brings none', async () => {
+          on()
+          const { marks, marked } = highlights()
+          const frame = frames()
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => answered([NED], { length: 8 }),
+          })
+          const scroll = laidOut(host)
+          await tapOn(host, 2, 6)
+          const first = marks.get('book-mention')
+          expect(marked('book-mention')).toEqual(['3:Ned Reed'])
+          const before = frame.asked()
+          scroll(20)
+          scroll(50)
+          expect(frame.asked()).toBe(before + 1)
+          frame.run()
+          expect(marks.get('book-mention')).toBe(first)
+          scroll(500)
+          expect(marked('book-mention')).toEqual(['3:Ned Reed'])
+          frame.run()
+          expect(marked('book-mention')).toEqual(['3:Ned Reed', '4:Ned Reed'])
+        })
+
+        it('clears the marks as the look-up closes, and a frame still waiting marks nothing', async () => {
+          on()
+          const { marks, marked } = highlights()
+          const frame = frames()
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => answered([NED], { length: 8 }),
+          })
+          const scroll = laidOut(host)
+          await tapOn(host, 2, 6)
+          expect(marked('book-mention')).toEqual(['3:Ned Reed'])
+          scroll(500)
+          press('Escape')
+          expect(marks.has('book-mention')).toBe(false)
+          frame.run()
+          expect(marks.has('book-mention')).toBe(false)
+        })
+
+        it('clears the marks on a new tap that names no one, and moves the word’s own mark', async () => {
+          on()
+          const { marks, marked } = highlights()
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: (text) =>
+              text.startsWith('Ned')
+                ? answered([NED], { length: 8 })
+                : answered([]),
+          })
+          laidOut(host)
+          await tapOn(host, 2, 6)
+          expect(marked('book-mention')).toEqual(['3:Ned Reed'])
+          await tapOn(host, 1, 1)
+          expect(lookUpTitle()).toBe('Ada')
+          expect(marks.has('book-mention')).toBe(false)
+          expect(marked('book-lookup-word')).toEqual(['1:Ada'])
+        })
+
+        it('marks nothing where a tap on a surname names several', async () => {
+          on()
+          const { marks } = highlights()
+          const { host } = await withCharacters(cast, inEnglish, {
+            characters: () => answered([bySurname(NED), bySurname(ADA)]),
+          })
+          laidOut(host)
+          await tapOn(host, 3, 13)
+          expect(cardsDrawn()).toEqual(['Ned Reed', 'Ada Reed'])
+          expect(marks.has('book-mention')).toBe(false)
+        })
+
+        it('marks nothing in an edition swapped to, and marks the text drawn anew on the way back', async () => {
+          on()
+          const { marks, marked } = highlights()
+          const { host } = await withCharacters(lettered(false), inEnglish, {
+            characters: () => answered([NED], { length: 8 }),
+          })
+          laidOut(host)
+          await tapOn(host, 2, 6)
+          expect(marked('book-mention')).toEqual(['3:Ned Reed'])
+          press(' ')
+          await land()
+          expect(edition(host)).toBe('하나')
+          expect(
+            host.querySelector('[data-block="3"] [data-text]')?.textContent,
+          ).toContain('Ned Reed')
+          expect([...marks.keys()]).toEqual([])
+          press(' ')
+          await land()
+          expect(edition(host)).toBe('One')
+          expect(marked('book-mention')).toEqual(['3:Ned Reed'])
+          expect(marked('book-lookup-word')).toEqual(['2:Ned Reed'])
+        })
+      })
     })
   })
 

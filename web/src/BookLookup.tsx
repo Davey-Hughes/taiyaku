@@ -5,6 +5,8 @@
  */
 import { useRef } from 'react'
 import type { DictionaryEntry } from './api'
+import type { CharacterCard } from './book'
+import { BookCharacters } from './BookCharacters'
 import { usePanelFocus } from './focus'
 
 /** Where a lookup stands. */
@@ -18,12 +20,15 @@ export type Looked =
 export function LookupPanel({
   word,
   looked,
+  cards = [],
   tapsPass = false,
   onSave,
   onClose,
 }: {
   word: string
   looked: Looked
+  /** The characters the word names, drawn above what the dictionary says. */
+  cards?: CharacterCard[]
   /** Whether a tap goes through the panel to the text under it. */
   tapsPass?: boolean
   /**
@@ -50,6 +55,7 @@ export function LookupPanel({
           Close
         </button>
       </div>
+      <BookCharacters cards={cards} />
       {looked.kind === 'looking' && <p>Looking it up…</p>}
       {looked.kind === 'none' && (
         <p>This server has no dictionary for {looked.lang}.</p>

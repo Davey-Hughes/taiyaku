@@ -829,6 +829,7 @@ async fn each_reading_route_marks_a_reader() {
         format!("/api/works/{comic}/raw/pages/0/thumb"),
         format!("/api/works/{book}/book"),
         format!("/api/works/{book}/raw/book/images/0"),
+        format!("/api/works/{book}/raw/book/characters?block=0&text=One."),
         format!("/api/works/{comic}/raw/download"),
         format!("/api/works/{comic}/raw/members/0/download"),
         format!("/opds/v1.2/works/{comic}/raw/pages/0"),

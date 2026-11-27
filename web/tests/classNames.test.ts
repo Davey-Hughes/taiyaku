@@ -119,6 +119,9 @@ const HOOKS: Record<string, string[]> = {
   // no rule names them.
   './AccountPage.test.tsx': ['done', 'grant-list', 'key-list', 'session-list'],
   './App.browser.test.tsx': ['reader-turn'],
+  // A card's other names are a value of its list of who the character is,
+  // drawn as each `dd` of that list is, so no rule names them.
+  './BookLookup.test.tsx': ['book-lookup-aliases'],
   './App.test.tsx': ['page-area'],
   // The account page's password form, which this file submits; drawn as
   // the page is, so no rule names it.

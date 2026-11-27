@@ -33545,3 +33545,237 @@ file is, through Raw2's Scan.
   Cancelled once Beta's file was hashed and then paused, the work held
   Alpha's file while paused on the branch and Beta's in that second form
   (the same two logs).
+
+## Character cards from haiyaku (2026-11-25)
+
+A tap on a name in the book reader's look-up mode shows who that is, as of the
+last chapter finished, from the character data haiyaku 0.2 keeps in
+`library.db` beside taiyaku's own tables. `docs/status.md` says what is built
+and, as O540 to O549, what is left; the design and the plan are
+`docs/superpowers/specs/2026-11-23-character-cards-design.md` and
+`docs/superpowers/plans/2026-11-24-character-cards.md`. The ledger, the task
+reports and their logs are under `.superpowers/sdd/haiyaku-cards-evidence/`,
+which is not committed. The books are copyrighted, so nothing here quotes one
+or names a character in one: a case is told by its shape.
+
+### Filling the database, for now
+
+Nothing in taiyaku writes character data, and the deployed library has no way
+to receive it (O541). By hand:
+
+1. `taiyaku library backup --db <library.db>`.
+2. Stop the server.
+3. Run haiyaku's CLI, of a version whose schema the deployed dependency knows
+   (0.2.x, haiyaku's schema 2), with `--db <library.db>`: `extract` on the
+   library's own EPUB, the file the library holds, so that the digest haiyaku
+   keys the book by is the member's; then `series`; then `link`.
+4. Start the server.
+
+A newer CLI writes a newer haiyaku schema, and taiyaku then switches cards off
+until its dependency catches up; the server's stderr says why
+(`character cards are off: …`). A book's title and chapter titles are read
+from its log the first time a look-up needs them and kept while the server
+runs, so a log replaced after that shows the old ones until a restart (the
+plan's FLAG 4).
+
+**A write while the server runs, tried once** (the plan's D6), on 2026-11-24,
+on the prototype's scratch copy, while its server answered a characters
+request on the Korean Goblet of Fire every second, 40 in all, every one 200.
+`series` took 76 ms and `extract --replace` of that book 9.36 s, both exit 0,
+and neither waited or said the database was in use. The replace dropped the
+57 links that start in that book, the Korean series' links going from 88 to
+31, and for the 15 seconds until `link` ran again 15 answers showed two cards
+for one name where there had been one. No answer showed a half-written book,
+and after the re-link the answer was byte for byte the one before. Titles
+going stale could not be seen, as the replaced log has the same titles. The
+how-to still says to stop the server, because the titles are read once
+(FLAG 4); lifting that is the owner's call, together with a fix for the
+titles (FLAG 14).
+
+**The backup, on real material.** The branch's first open of a copy of the
+test library from 2026-11-15 took one backup, `library-<stamp>-before-v32.db`:
+taiyaku's own migrations were pending, so that one backup holds the database
+before taiyaku's migrations and haiyaku's alike, and no `-before-haiyaku-v2`
+file was taken, as the plan's FLAG 3 has it.
+
+### What a fold costs
+
+Every tap folds the events of the book, and with `earlier=1` those of the
+earlier books of its series, up to the last chapter finished before the one
+tapped in (design §7). Measured on 2026-11-24 on the prototype server: the
+same 20 taps with `earlier=1` in chapter 37 of the English Goblet of Fire,
+names and plain words, one request at a time, `micros` read from the server's
+request log. Three builds of the branch were measured in one sitting: each
+started fresh on the same scratch database and warmed with three requests, the
+three run in turn and the turn repeated. The machine was loaded, other
+sessions using it (load average 17.70, 34.58 and 38.58 at the end), and
+figures from other sittings are not comparable with these. The builds:
+
+- **shared:** the fold on the shared connection;
+- **own:** the fold on a connection of its own, which each tap opens;
+- **order and start:** as **own**, with the cards matched through their shown
+  name, whole or by a part of it, listed first and the look-up's start chosen
+  by the server, asked without `before` and with up to 64 units of it.
+
+| Build | n | min | median | p90 | max |
+|---|---|---|---|---|---|
+| shared, cycle 1 | 20 | 5650 | 7601 | 9439 | 10131 |
+| own, cycle 1 | 20 | 6689 | 7573.5 | 10765 | 12484 |
+| order and start, no `before`, cycle 1 | 20 | 6722 | 8598.5 | 11422 | 16063 |
+| order and start, with `before`, cycle 1 | 20 | 7774 | 10196.5 | 12367 | 14133 |
+| shared, cycle 2 | 20 | 5717 | 6580 | 8395 | 11237 |
+| own, cycle 2 | 20 | 6878 | 8399.5 | 12072 | 12702 |
+| order and start, no `before`, cycle 2 | 20 | 7012 | 7686.5 | 9558 | 13289 |
+| order and start, with `before`, cycle 2 | 20 | 6652 | 8953.5 | 11680 | 13284 |
+
+Figures in microseconds; every answer 200. Every one is under the 300 ms the
+reader waits for the cards past the dictionary's answer. Not measured:
+contention, since each request ran alone, where the reader sends the
+characters request and the dictionary's together.
+
+**What the plan's FLAG 10 decided.** Its two rules were set before the first
+measurement, taken in a sitting of its own earlier on 2026-11-24 on a release
+build with the fold on the shared connection: the table's 20 taps in chapter
+37 of the English Goblet of Fire, 20 in the Korean one's, and comic page
+requests in the same session. Each rule compares figures from within that one
+session, and they are not comparable with the table above. The connection rule
+moves the fold to `Library::working()` if the characters route's median with
+`earlier=1` in that chapter is above the median of the session's comic page
+requests: it was 5824.5 µs in English and 5944 µs in Korean, against 2215.5 µs
+for the 80 comic page requests pooled, so the fold runs on a connection of its
+own and never holds the shared connection's lock, which every request waits
+on. The cache rule opens a cache as a row if that median is above the
+dictionary route's by more than the wait: it was above by 5637.5 µs in
+English, against a dictionary median of 187 µs (every answer 404, no English
+dictionary being installed), and by 5556.5 µs in Korean, against 387.5 µs
+(answered), where the wait is 300 ms, so no cache row was opened.
+
+### The prototype's rounds
+
+The owner settled the card's look on a prototype server over six rounds on
+2026-11-24, in Firefox on Linux, on a desktop, paged. It served a scratch
+copy of the test library, its Harry Potter books (Sorcerer's Stone, Chamber of
+Secrets and Goblet of Fire, in English and in Korean) filled by haiyaku
+0.2.0's CLI from its reply cache, with no model called.
+
+1. Asked: "in general it's ok. the styling is dense and hard to read, and the
+   quote button for each is bad. if anything each line should just be
+   clickable for "more info" including a quote, but the button itself is bad
+   UI". Changed: no Quote button; a fact is a row to press, with a mark before
+   it and a ground under the pointer, which opens its quote, where the books
+   say it (one chapter, or the first and the last), and an overturn's note,
+   quote and chapter. Facts are grouped under the other character's name, said
+   once; who the character is (other names, first met, last seen) is in
+   quieter labels beside their values; the lines are looser; the chapter
+   number is left out where the title carries it; an overturned fact is
+   struck through, with an "overturned" tag.
+2. The owner: "ok looks good", and asked what "overturned" means; offered
+   "later disproved": "overturned can be good, though we should add alt text
+   to explain what that means". Changed: the tag and the open row's
+   "Overturned:" label carry a title, "The story later showed this to be
+   wrong", and the tag shows the help cursor.
+3. Four open points answered. The lit text widening to the whole name: "yes,
+   and honestly it should highlight other copies of that character in the
+   text that are visible in the ereader". The 300 ms wait: "this is ok for
+   now". The card at phone width: "good". The card's length: "yeah ok for
+   now". Changed: the light runs on over the whole name, and other mentions
+   near the screen are marked with a 2px underline in the accent over a faint
+   wash of it, through the CSS Custom Highlight API, which moves no text. Seen
+   in it: a surname other people share was marked as the tapped character.
+4. Asked: "I feel like the marks should be different depending on who it's
+   matching. unless it's doing that and there's an issue." A tap on a given
+   name had marked the surname in the title + surname of two other people,
+   and a given name said with a stutter, repeated with hyphens, found no one.
+   Added mid-round: "when I click on the side panel for the character, the
+   highlight of my initial click goes away, which shouldn't happen until we
+   close the panel". Changed: the marks come only from names that are the
+   character's alone (below), and the tapped word is a highlight of its own
+   while the panel is open.
+5. The owner, on round 4's limits: a title + surname should be recognised as a
+   name. Found: a tap on one answered first the card of another character, who
+   bears it as another name and was seen more recently, then the card whose
+   shown name it is, and the marks then marked nothing. Changed: a card
+   matched through its shown name, whole or by a part of it, is listed before
+   one matched only through another name, most recent first within each
+   (design §5 and §7), and the reader marks the first card's own shown name
+   where that is what was tapped. Found too: a tap on a name's second word
+   looked up that word alone.
+6. From rounds 4 and 5: the request carries the block's text before the tap,
+   the server chooses where the name starts and answers `start` beside
+   `length` (design §7), and the light runs from that start.
+
+Approved after round 6, the owner's "yes looks good" (2026-11-24). The wait
+stays at 300 ms (`CARDS_WAIT_MS`), the owner's "this is ok for now". The
+panel's heading still shows the tapped word rather than the name matched: it
+was offered and not asked for (O544).
+
+### The marks
+
+`web/src/bookMentions.ts` finds the mentions, in the reader, by the first
+card's names that are that character's alone. A mark on someone else is worse
+than a mention missed, so the surname is left out, being a family's, and for a
+character with a given name so is a title with the surname, which counts only
+where it is the shown name and the very text looked up. With a given name: it,
+the given name and surname as one run, and the shown name and other names that
+carry the given name, or a shown name with no surname in it. With none: the
+shown name, and other names that carry all of it. Nothing is marked where the
+look-up named several characters by neither the first card's shown name nor its
+given name. A name must begin a word in every script that sets words apart,
+Hangul among them, where a name found inside a longer word is that word, and
+need not in kana or Han; it must end one except in Hangul, kana and Han, which
+write a particle onto a name. A single word all in lower case is never marked.
+The blocks searched are those on the screen and a screen either way.
+
+What it gets wrong, each recorded as it is by a test named KNOWN WRONG in
+`web/tests/bookMentions.test.ts`: it misses a character with a given name
+named by surname alone, by a title and surname other than its shown name, or
+by another name that lacks the given name; and it marks a conjugated Korean
+verb that begins like a Hangul name.
+Beside those, a look-up from the selection bar marks the selected name itself
+(O548). The rule is the reader's for now because haiyaku answers who a text
+names from its start, not which character each mention on a page is; a match
+for each mention is haiyaku API work (O543).
+
+### Seen at the prototype and by the tests
+
+- A look-up that starts in the words before the tap reads a name on across a
+  sentence's end or a closing quotation mark, since haiyaku parts words at
+  every character that is not a letter or a digit: a tap on Dunn in "He rowed
+  to Ira. Dunn was gone." names Ira Dunn alone, where with nothing before it
+  every Dunn is listed (taiyaku-library's
+  `known_wrong_a_name_is_read_across_a_sentence_end_or_a_closing_quote` holds
+  it as it is), and a match that stops at punctuation would be haiyaku's to
+  add.
+- One tap in Firefox drew no card on a first try at the prototype and did not
+  recur. By a reading of the code, not a probe, nothing in its path is
+  Firefox's own, and the likeliest cause is this branch's: a characters answer
+  later than the reader's 300 ms past the dictionary's outcome is dropped for
+  that look-up (O549).
+- With the look-up panel open, paged, ArrowRight does not turn the page. That
+  is main's: the panel takes focus as it opens, and the reader leaves a panel
+  holding focus every key but Escape (`inPanel`, in `keys.ts`).
+- At phone size the words under the look-up panel show through it, and what
+  scrolls under its sticky head shows behind it. That is main's: both are
+  drawn on `--reader-panel`, 92% opaque, over the text.
+- Paged, a wheel turned over the text with the panel open sets the text
+  smaller, as main means it: the paged wheel is the text size's control.
+- At 900 by 700, with the panel docked beside the text, a press on a name's
+  first word on the last line was brought back into sight, and the name's
+  second word, on the next line, was at y 708 to 728 under a text box that
+  ends at 700: the sight check keeps the word pressed in sight, not the name
+  lit (O544).
+- A fact's row is 28.3px tall under a fine pointer and a coarse one alike,
+  against the 44px the reader's other controls keep for a finger; its
+  `min-height: 0` overrides nothing, since `auto` already computes to 0 for
+  that row and no coarse-pointer rule names its class (O547).
+- The browser tests run in Chromium alone, so nothing holds the card in
+  Firefox. Their check that the marks move nothing compares the text's boxes
+  with the marks drawn and after the reader clears them, so it catches a
+  layout change that comes and goes with the marks, and not one that stays.
+- The character data has limits of its own, seen at the prototype (words that
+  are no name kept as names, an everyday Korean word drawing a card, a Korean
+  name with an ending written onto it finding no one, a missed link leaving
+  two cards for one character, and Korean cards carrying English notes); they
+  are haiyaku's, filed in haiyaku's own repository as its O26 to O30. The
+  prototype's links match haiyaku's acceptance run after that run's
+  `Refusal::Related` fix: 114 in English and 88 in Korean (haiyaku's O31).

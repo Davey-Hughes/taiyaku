@@ -216,16 +216,21 @@ taiyaku library backup --keep 7           # ...and delete all but the seven newe
 #
 # an open that migrates the database backs it up first, to
 # <db parent>/backups/library-<stamp>-before-v<N>.db, N being the version it
-# migrates to, and refuses to migrate if that backup fails. --keep never
-# deletes one of those; delete them by hand. a migration that fails is tried
-# again at the next open, which takes no new backup while the database file
-# and its -wal are unchanged since the newest -before-v<N> one and that one
-# opens at the database's version. unchanged is judged by the later of each
-# file's modification and change times, so a write or a chmod after the
-# backup makes the next open back up again, and so does a move where the
-# filesystem sets the change time on a rename. a copy cut off part way stays
-# there as a hidden .library-<stamp>-before-v<N>.db.partial, never listed or
-# pruned; delete it by hand.
+# migrates to, and refuses to migrate if that backup fails. an open that makes
+# or migrates haiyaku's character tables while taiyaku's own schema has
+# nothing to migrate (a new library file takes none) takes
+# library-<stamp>-before-haiyaku-v<N>.db there instead, N being haiyaku's
+# schema version, and if that backup fails it opens with character cards off
+# rather than refusing. --keep never deletes either kind; delete them by hand.
+# a migration that fails is tried again at the next open, which takes no new
+# backup while the database file and its -wal are unchanged since the newest
+# backup of the same kind and N and that one opens at the database's version.
+# unchanged is judged by the later of each file's modification and change
+# times, so a write or a chmod after the backup makes the next open back up
+# again, and so does a move where the filesystem sets the change time on a
+# rename. a copy cut off part way stays there as a hidden
+# .library-<stamp>-before-v<N>.db.partial (or -before-haiyaku-v<N>), never
+# listed or pruned; delete it by hand.
 #
 # restore is out of band on purpose: stop the server; move library.db, and
 # any library.db-wal and library.db-shm, aside; move the backup in as
@@ -830,16 +835,22 @@ restoring the backup the server took before it. An open that migrates first
 writes `backups/library-<stamp>-before-v<N>.db` beside the database, where `N`
 is the version it migrated to, and refuses to migrate if that backup fails. The
 file holds the database as it stood, so an image whose schema version is below
-`N`, and at least the version the file holds, can open it. `--keep` never
-deletes one; delete them by hand. To restore one:
+`N`, and at least the version the file holds, can open it. An open that makes or
+migrates haiyaku's character tables while taiyaku's own schema has nothing to
+migrate (a new library file takes none) writes
+`backups/library-<stamp>-before-haiyaku-v<N>.db` instead, `N` being haiyaku's
+schema version, and if that backup fails it opens with character cards off
+rather than refusing. `--keep` never deletes either kind; delete them by hand.
+To restore one of either kind:
 
 1. Pin an image that can open it, as above, and stop the container.
 2. In `/mnt/user/appdata/taiyaku/config/taiyaku/`, where the compose block's
    `/config` mapping puts `library.db` and `backups/`, move `library.db`, and
    any `library.db-wal` and `library.db-shm`, aside. The `-wal` goes because
    one left beside a restored file can be applied over it.
-3. Move the chosen `backups/library-<stamp>-before-v<N>.db` in as `library.db`,
-   and run `chown 99:100 library.db`, the account the container runs as.
+3. Move the chosen `backups/library-<stamp>-before-v<N>.db` (or
+   `-before-haiyaku-v<N>.db`) in as `library.db`, and run
+   `chown 99:100 library.db`, the account the container runs as.
 4. Recreate the container on the pinned image (Compose Up, or
    `docker compose up -d`): a plain `docker start` runs the image it was
    created from.
@@ -852,7 +863,9 @@ loop does not fill the disk with copies of one database. Unchanged is judged
 by the later of each file's modification and change times: a write or a
 `chmod` after the backup makes the next start back up again, and so does a
 restore by `mv` where the filesystem sets the change time on a rename, since a
-move keeps the modification time.
+move keeps the modification time. A haiyaku migration that fails restarts
+nothing, since the server opens with character cards off; each start tries it
+again, and takes its `-before-haiyaku-v<N>` backup by the same rule.
 
 The label at the sidebar's foot names the build that is running: the first
 seven characters of its commit, the same seven CI tags the image with as

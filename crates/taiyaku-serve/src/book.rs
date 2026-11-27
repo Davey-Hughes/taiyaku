@@ -96,11 +96,21 @@ pub(crate) async fn get_book(
     }
     let sidecar = Arc::clone(view.sidecar());
     let read = tokio::task::spawn_blocking(move || {
-        let (pins, books) = {
+        let (pins, books, characters) = {
             let conn = state.library.conn();
-            (pins_of(&conn, &work)?, books_of(&conn, &work)?)
+            let pins = pins_of(&conn, &work)?;
+            let books = books_of(&conn, &work)?;
+            let characters = with_character_data(&state.library, &conn, &work, &sidecar, &books);
+            (pins, books, characters)
         };
-        document(&work, &sidecar, &work.sidecar().hub, &pins, &books)
+        document(
+            &work,
+            &sidecar,
+            &work.sidecar().hub,
+            &pins,
+            &books,
+            &characters,
+        )
     })
     .await;
     match read {
@@ -150,25 +160,9 @@ pub(crate) async fn get_book_image(
         )
             .into_response();
     };
-    let books = match read_books(&state, &work).await {
-        Ok(books) => books,
+    let (edition, path) = match book_edition(&state, &view, &work, &id, &key).await {
+        Ok(found) => found,
         Err(refusal) => return refusal,
-    };
-    let no_book = || crate::routes::not_found(format!("work `{id}` has no book edition `{key}`"));
-    // The edition as the view holds it, which a refresh of the work cannot
-    // have changed since the grant was checked against it.
-    let Some(edition) = view
-        .sidecar()
-        .editions
-        .get(&key)
-        .filter(|edition| is_book(&key, edition, &books))
-    else {
-        return no_book();
-    };
-    let Ok([path]) =
-        <[std::path::PathBuf; 1]>::try_from(crate::download::member_paths(&work, edition))
-    else {
-        return no_book();
     };
     // `Stored`: a book's images are sent as the book holds them, whatever the
     // client accepts, so the tag names no other rendering.
@@ -219,20 +213,59 @@ pub(crate) async fn get_book_image(
     }
 }
 
+/// Edition `key` as `view` holds it, where the scan read it as a book
+/// ([`is_book`]), and the path of its one file; else the 404 an edition the
+/// work does not have gets. Both routes that read one book edition's file ask
+/// here, so an edition the grant hides is refused alike by each. `Err` is the
+/// response to send.
+#[expect(
+    clippy::result_large_err,
+    reason = "the `Err` carries a `Response`, for `routes::on_the_grant`'s reason: a \
+              routing handler's refusal path, called once per request"
+)]
+pub(crate) async fn book_edition<'v>(
+    state: &Arc<ServeState>,
+    view: &'v crate::view::View,
+    work: &Arc<crate::Work>,
+    id: &str,
+    key: &str,
+) -> Result<(&'v taiyaku_core::Edition, std::path::PathBuf), Response> {
+    let books = read_books(state, work).await?;
+    let no_book = || crate::routes::not_found(format!("work `{id}` has no book edition `{key}`"));
+    // The edition as the view holds it, which a refresh of the work cannot
+    // have changed since the grant was checked against it.
+    let Some(edition) = view
+        .sidecar()
+        .editions
+        .get(key)
+        .filter(|edition| is_book(key, edition, &books))
+    else {
+        return Err(no_book());
+    };
+    let Ok([path]) =
+        <[std::path::PathBuf; 1]>::try_from(crate::download::member_paths(work, edition))
+    else {
+        return Err(no_book());
+    };
+    Ok((edition, path))
+}
+
 /// The document [`get_book`] sends: a book of none, `hub` null, for a work
 /// with no book edition, which a reader can then say rather than guess.
 ///
 /// `sidecar` is the caller's view of the work, whose hub is another edition
 /// where the grant hides the work's own; `pins` count the blocks of the work's
 /// own hub, `pinned_to`, so they are aligned through only where that is the
-/// hub sent. `book_keys` are [`books_of`]'s. `Err` where a book's file is
-/// there and does not read, or where no book reads.
+/// hub sent. `book_keys` are [`books_of`]'s, and `characters`
+/// [`with_character_data`]'s digests. `Err` where a book's file is there and
+/// does not read, or where no book reads.
 fn document(
     work: &crate::Work,
     sidecar: &Sidecar,
     pinned_to: &str,
     pins: &[book_pins::Pin],
     book_keys: &HashSet<String>,
+    characters: &HashSet<String>,
 ) -> Result<serde_json::Value, String> {
     let mut books = Vec::new();
     let mut unread = None;
@@ -373,6 +406,9 @@ fn document(
             if !figures.is_empty() {
                 sent["figures"] = figures.into();
             }
+            if characters.contains(&edition.members[0].sha256) {
+                sent["characters"] = true.into();
+            }
             ((*key).clone(), sent)
         })
         .collect();
@@ -382,6 +418,48 @@ fn document(
         "editions": editions,
         "alignments": alignments,
     }))
+}
+
+/// The digests of `sidecar`'s book editions haiyaku holds a log for, which
+/// [`document`] flags so the reader asks for character cards on those alone.
+///
+/// None while cards are off, and haiyaku's tables are then left unread: they
+/// are not known to be at the version this build reads. A read that fails
+/// leaves its edition unflagged, logged, so a damaged haiyaku table costs the
+/// book its cards and never the book itself.
+fn with_character_data(
+    library: &taiyaku_library::Library,
+    conn: &rusqlite::Connection,
+    work: &crate::Work,
+    sidecar: &Sidecar,
+    book_keys: &HashSet<String>,
+) -> HashSet<String> {
+    let mut held = HashSet::new();
+    if library.cards_off().is_some() {
+        return held;
+    }
+    for (key, edition) in sidecar
+        .editions
+        .iter()
+        .filter(|(key, e)| is_book(key, e, book_keys))
+    {
+        let sha256 = &edition.members[0].sha256;
+        match taiyaku_library::characters::holds(conn, sha256) {
+            Ok(true) => {
+                held.insert(sha256.clone());
+            }
+            Ok(false) => {}
+            Err(why) => crate::routes::log_line(
+                &mut std::io::stderr(),
+                &format!(
+                    "work `{}`'s book edition `{key}` is sent without its character data",
+                    work.id
+                ),
+                &why,
+            ),
+        }
+    }
+    held
 }
 
 /// `block`'s marks as [`document`] sends them, at `units`, their ranges in
@@ -510,6 +588,22 @@ fn read(sha256: &str, path: &std::path::Path) -> Result<Arc<ReadBook>, String> {
     }
     held.insert(sha256.to_string(), Arc::clone(&read));
     Ok(read)
+}
+
+/// The spine document holding block `block` of the book at `path`, its
+/// blocks numbered through the edition as [`document`] sends them, or `None`
+/// past its last block. Read through [`read`]'s cache, as a reader taps a
+/// book it has just been sent.
+pub(crate) fn document_at(
+    sha256: &str,
+    path: &std::path::Path,
+    block: usize,
+) -> Result<Option<String>, String> {
+    Ok(read(sha256, path)?
+        .book
+        .blocks
+        .get(block)
+        .map(|block| block.id.document.clone()))
 }
 
 /// How many tests hold [`read`]'s cache whole (`tests::KeptWhole`).

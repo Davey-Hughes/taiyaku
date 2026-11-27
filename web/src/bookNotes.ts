@@ -627,7 +627,15 @@ export function rangeIn(
   range: TextRange,
 ): Range | undefined {
   const own = text?.querySelector(`[data-block="${block}"] > [data-text]`)
-  if (!own) return undefined
+  return own ? rangeOf(own, range) : undefined
+}
+
+/**
+ * A DOM range over `range` of the words `own`, a block's `[data-text]`,
+ * holds: `rangeIn` for a caller that has the block's element in hand, and
+ * so need not search the whole text for it once for each range.
+ */
+export function rangeOf(own: Element, range: TextRange): Range | undefined {
   const nodes = wordNodes(own)
   // A start on a boundary between two nodes goes in the later, an end in the
   // earlier, so neither takes in a node it covers none of.

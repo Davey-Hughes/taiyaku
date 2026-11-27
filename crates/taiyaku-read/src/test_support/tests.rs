@@ -123,3 +123,43 @@ fn nothing_outside_this_helper_calls_temp_dir() {
 fn a_label_holding_a_slash_is_refused() {
     let _ = TempDir::new("a/b");
 }
+
+/// Each paragraph is a block of the document its path names, in spine order:
+/// the paths a haiyaku log stores for the same file.
+#[test]
+fn epub_documents_reads_back_with_each_block_in_the_document_named() {
+    let dir = TempDir::new("epub-documents");
+    let path = super::epub_documents(
+        &dir,
+        "b.epub",
+        "<dc:title>Bee</dc:title>",
+        &[
+            ("OEBPS/c1.xhtml", &["One.", "Two."]),
+            ("OEBPS/text/c2.xhtml", &["Three."]),
+        ],
+    );
+    let book = crate::read_book(&path).expect("reads the EPUB");
+    let blocks: Vec<(&str, &str)> = book
+        .blocks
+        .iter()
+        .map(|block| (block.id.document.as_str(), block.text.as_str()))
+        .collect();
+    assert_eq!(
+        blocks,
+        [
+            ("OEBPS/c1.xhtml", "One."),
+            ("OEBPS/c1.xhtml", "Two."),
+            ("OEBPS/text/c2.xhtml", "Three."),
+        ]
+    );
+    assert_eq!(book.title.as_deref(), Some("Bee"));
+}
+
+/// A document outside the package's directory would need an href with `..`,
+/// which this helper does not write.
+#[test]
+#[should_panic(expected = "OEBPS/")]
+fn epub_documents_refuses_a_document_outside_oebps() {
+    let dir = TempDir::new("epub-documents-outside");
+    let _ = super::epub_documents(&dir, "b.epub", "", &[("c1.xhtml", &["One."])]);
+}

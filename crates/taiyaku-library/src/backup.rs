@@ -13,8 +13,10 @@
 //! steps, which move the `-wal` and `-shm` aside and give the server's owner.
 //!
 //! **The open takes one before every migration** (O263), tagged `-before-v<N>`
-//! for the version it migrates to, and [`prune`] neither counts nor deletes it.
-//! It skips one only while the newest for that version still holds the
+//! for the version it migrates to, or `-before-haiyaku-v<N>` for haiyaku's when
+//! only haiyaku's tables have a migration pending; one taken before taiyaku's
+//! holds the database before both. [`prune`] neither counts nor deletes either.
+//! The open skips one only while the newest for that migration still holds the
 //! database unchanged; see [`stands_for`].
 
 use std::path::{Path, PathBuf};
@@ -65,8 +67,20 @@ pub struct Backup {
     pub bytes: u64,
     /// The timestamp embedded in the name, `YYYYMMDDTHHMMSSZ`.
     pub taken: String,
-    /// The `N` of a `-before-v<N>` name, `None` for a backup taken on request.
-    pub before: Option<u32>,
+    /// The migration the open took it before, read from its name; `None` for
+    /// a backup taken on request.
+    pub before: Option<Before>,
+}
+
+/// The migration a backup was taken before, by the schema version it
+/// migrates to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Before {
+    /// taiyaku's own schema: a `-before-v<N>` name.
+    Taiyaku(u32),
+    /// haiyaku's tables, while taiyaku's own schema has nothing pending: a
+    /// `-before-haiyaku-v<N>` name.
+    Haiyaku(u32),
 }
 
 /// Where backups of `db` live: `<db parent>/backups`.
@@ -88,6 +102,10 @@ pub fn directory_for(db: &Path) -> PathBuf {
 /// reads it.
 const BEFORE: &str = "-before-v";
 
+/// [`BEFORE`] for a backup taken before haiyaku's migration, ahead of
+/// haiyaku's schema version.
+const BEFORE_HAIYAKU: &str = "-before-haiyaku-v";
+
 /// The name a backup taken now would get, `tail` between its stamp and
 /// [`SUFFIX`], from **SQLite's own clock**.
 ///
@@ -104,9 +122,13 @@ fn name_now(conn: &Connection, tail: &str) -> Result<String, String> {
     Ok(format!("{PREFIX}{stamp}{tail}{SUFFIX}"))
 }
 
-/// The name of the backup an open takes now, before migrating to `target`.
-pub(crate) fn name_before_migration(conn: &Connection, target: u32) -> Result<String, String> {
-    name_now(conn, &format!("{BEFORE}{target}"))
+/// The name of the backup an open takes now, before the migration `before`.
+pub(crate) fn name_before_migration(conn: &Connection, before: Before) -> Result<String, String> {
+    let tail = match before {
+        Before::Taiyaku(target) => format!("{BEFORE}{target}"),
+        Before::Haiyaku(target) => format!("{BEFORE_HAIYAKU}{target}"),
+    };
+    name_now(conn, &tail)
 }
 
 /// Take a backup into `into_dir`, creating the directory if it is not there.
@@ -321,15 +343,16 @@ fn status_changed(_: &std::fs::Metadata) -> Option<SystemTime> {
     None
 }
 
-/// Whether the newest backup before migrating `db` from `current` to `target`
-/// was written no earlier than `written` and opens at `current`, so it still
-/// holds the database as it stands (O263). Without this a failing migration
-/// in a restart loop backs up on every start, and nothing deletes those, until
-/// the disk fills. Any doubt is `false`.
+/// Whether the newest backup before the migration `before` of `db`, whose
+/// schema that migration changes is at `current` (haiyaku's absent tables at
+/// 0), was written no earlier than `written` and opens at `current`, so it
+/// still holds the database as it stands (O263). Without this a failing
+/// migration in a restart loop backs up on every start, and nothing deletes
+/// those, until the disk fills. Any doubt is `false`.
 pub(crate) fn stands_for(
     db: &Path,
+    before: Before,
     current: u32,
-    target: u32,
     written: Option<SystemTime>,
 ) -> bool {
     let Some(written) = written else {
@@ -339,7 +362,7 @@ pub(crate) fn stands_for(
     let Ok(found) = list(&dir) else {
         return false;
     };
-    let Some(newest) = found.iter().find(|backup| backup.before == Some(target)) else {
+    let Some(newest) = found.iter().find(|backup| backup.before == Some(before)) else {
         return false;
     };
     let path = dir.join(&newest.name);
@@ -350,26 +373,39 @@ pub(crate) fn stands_for(
     let unchanged = std::fs::symlink_metadata(&path)
         .and_then(|m| m.modified())
         .is_ok_and(|taken| written <= taken);
-    unchanged && opens_at(&path, current)
+    unchanged && opens_at(&path, before, current)
 }
 
-/// Whether `path` opens as a database at `version`. [`take_named`]'s rename
-/// puts only a whole copy under a backup's name; this stands between the skip
-/// and a file put there any other way, an empty one included.
-fn opens_at(path: &Path, version: u32) -> bool {
-    Connection::open_with_flags(
+/// Whether `path` opens as a database whose schema `before` names is at
+/// `version`. [`take_named`]'s rename puts only a whole copy under a backup's
+/// name; this stands between the skip and a file put there any other way, an
+/// empty one included.
+fn opens_at(path: &Path, before: Before, version: u32) -> bool {
+    let Ok(copy) = Connection::open_with_flags(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .is_ok_and(|copy| crate::schema::version(&copy) == Ok(version))
+    ) else {
+        return false;
+    };
+    match before {
+        Before::Taiyaku(_) => crate::schema::version(&copy) == Ok(version),
+        // An empty file has no haiyaku tables either, which is haiyaku's 0, so
+        // the copy has to open as a library as well.
+        Before::Haiyaku(_) => {
+            crate::schema::version(&copy).is_ok_and(|taiyaku| taiyaku > 0)
+                && haiyaku::store::schema_version(&copy)
+                    .is_ok_and(|haiyaku| haiyaku.unwrap_or(0) == version)
+        }
+    }
 }
 
-/// The timestamp inside a backup's name and the `N` of a `-before-v<N>` tail,
-/// or `None` for a name that is not a backup's.
+/// The timestamp inside a backup's name and the migration a `-before-v<N>` or
+/// `-before-haiyaku-v<N>` tail names, or `None` for a name that is not a
+/// backup's.
 ///
 /// **The one place that decides what counts as a backup file**, read by
 /// [`list`] and therefore by [`prune`].
-fn stamp_of(name: &str) -> Option<(String, Option<u32>)> {
+fn stamp_of(name: &str) -> Option<(String, Option<Before>)> {
     let rest = name.strip_prefix(PREFIX)?.strip_suffix(SUFFIX)?;
     // `YYYYMMDDTHHMMSSZ` — 16 bytes, digits with a `T` and a `Z`. Checked
     // rather than assumed so `prune` cannot be talked into deleting
@@ -390,8 +426,10 @@ fn stamp_of(name: &str) -> Option<(String, Option<u32>)> {
     let (stamp, tail) = rest.split_at(16);
     let before = if tail.is_empty() {
         None
+    } else if let Some(digits) = tail.strip_prefix(BEFORE_HAIYAKU) {
+        Some(Before::Haiyaku(version_of(digits)?))
     } else {
-        Some(version_of(tail.strip_prefix(BEFORE)?)?)
+        Some(Before::Taiyaku(version_of(tail.strip_prefix(BEFORE)?)?))
     };
     Some((stamp.to_string(), before))
 }

@@ -31,6 +31,17 @@ async fn book_of(dir: &std::path::Path, hub: &str, principal: crate::auth::Princ
 /// it can be pinned and its books told; with `fr`, a third book edition, a
 /// copy of `en`.
 fn books(dir: &std::path::Path, hub: &str, fr: bool) -> Arc<crate::ServeState> {
+    Arc::new(books_in(dir, hub, fr, crate::test_support::library()))
+}
+
+/// [`books`]'s work held in `library`, for a test that needs a library in a
+/// file, which can be reopened.
+fn books_in(
+    dir: &std::path::Path,
+    hub: &str,
+    fr: bool,
+    library: Arc<taiyaku_library::Library>,
+) -> crate::ServeState {
     let shelf = dir.to_string_lossy().into_owned();
     taiyaku_read::test_support::epub(
         dir,
@@ -72,6 +83,7 @@ fn books(dir: &std::path::Path, hub: &str, fr: bool) -> Arc<crate::ServeState> {
     );
     let sidecar = Sidecar::from_json(&json).unwrap();
     let mut state = crate::test_support::state(dir);
+    state.library = library;
     crate::test_support::held_as_scanned(
         &state.library,
         dir,
@@ -87,7 +99,7 @@ fn books(dir: &std::path::Path, hub: &str, fr: bool) -> Arc<crate::ServeState> {
         dir.join("taiyaku.json"),
         sidecar,
     )]);
-    Arc::new(state)
+    state
 }
 
 async fn get(state: &Arc<crate::ServeState>, principal: crate::auth::Principal) -> Response {
@@ -379,7 +391,7 @@ async fn pins_hold_only_against_the_works_own_hub() {
             books_of(&conn, &work).unwrap(),
         )
     };
-    let book = document(&work, &seen, "en", &pins, &books).unwrap();
+    let book = document(&work, &seen, "en", &pins, &books, &HashSet::new()).unwrap();
     assert_eq!(book["hub"], "fr");
     let to_ko = book["alignments"]
         .as_array()
@@ -388,6 +400,92 @@ async fn pins_hold_only_against_the_works_own_hub() {
         .find(|a| a["to"] == "ko")
         .unwrap();
     assert_eq!(to_ko["pins"], serde_json::json!([]), "{book}");
+}
+
+/// The `characters` field `book` sends on edition `key`, `None` where it
+/// sends none.
+fn flag_of<'a>(book: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+    book["editions"][key]
+        .as_object()
+        .expect("the edition is sent")
+        .get("characters")
+}
+
+/// [`books`]'s `en` stored in haiyaku, a log under its digest, which it
+/// answers.
+fn store_en(state: &crate::ServeState, dir: &std::path::Path) -> String {
+    let en = crate::test_support::sha256_of(&dir.join("en.epub"));
+    taiyaku_library::test_support::store_lamp_alone(&mut state.library.conn(), &en);
+    en
+}
+
+#[tokio::test]
+async fn the_book_says_which_editions_have_character_data() {
+    let tmp = crate::test_support::Fixture::new("book-characters");
+    let state = books(&tmp, "en", false);
+    store_en(&state, &tmp);
+
+    let response = get(&state, reader()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let book = json_of(response).await;
+    assert_eq!(flag_of(&book, "en"), Some(&serde_json::Value::Bool(true)));
+    assert_eq!(flag_of(&book, "ko"), None, "haiyaku holds no log for ko");
+}
+
+#[tokio::test]
+async fn with_cards_off_the_book_sends_no_flag() {
+    let tmp = crate::test_support::Fixture::new("book-characters-off");
+    let db = tmp.join("db");
+    std::fs::create_dir_all(&db).expect("the database's directory");
+    let open = || Arc::new(taiyaku_library::Library::open(&db.join("library.db")).expect("opens"));
+    let mut state = books_in(&tmp, "en", false, open());
+    let en = store_en(&state, &tmp);
+    state
+        .library
+        .conn()
+        .execute("UPDATE haiyaku_schema SET version = 3", [])
+        .expect("a later haiyaku's version");
+    state.library = open();
+    assert!(state.library.cards_off().is_some(), "cards are off");
+    assert_eq!(
+        taiyaku_library::characters::holds(&state.library.conn(), &en),
+        Ok(true),
+        "haiyaku's tables still answer for en, so only cards being off keeps its flag back"
+    );
+
+    let response = get(&Arc::new(state), reader()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(flag_of(&json_of(response).await, "en"), None);
+}
+
+#[tokio::test]
+async fn a_haiyaku_read_that_fails_sends_no_flag_and_the_book_still_opens() {
+    let tmp = crate::test_support::Fixture::new("book-characters-unread");
+    let state = books(&tmp, "en", false);
+    let en = store_en(&state, &tmp);
+    {
+        let conn = state.library.conn();
+        conn.execute_batch("DROP TABLE haiyaku_order_book")
+            .expect("drops a table no other table references");
+        assert!(
+            taiyaku_library::characters::holds(&conn, &en).is_err(),
+            "haiyaku's read of en fails"
+        );
+    }
+
+    let response = get(&state, reader()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let book = json_of(response).await;
+    assert_eq!(
+        book["editions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["en", "ko"],
+        "both books are sent"
+    );
+    assert_eq!(flag_of(&book, "en"), None);
 }
 
 #[tokio::test]

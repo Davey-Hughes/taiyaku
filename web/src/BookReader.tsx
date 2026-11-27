@@ -47,6 +47,9 @@ import {
   type Book,
   blockAt,
   bookImageUrl,
+  CARDS_WAIT_MS,
+  type CharacterCard,
+  charactersText,
   contents,
   imageLinkLabel,
   counterpart,
@@ -59,6 +62,8 @@ import {
   excerptsIn,
   firstSentences,
   getBook,
+  getCharacters,
+  charactersBefore,
   lineAt,
   nextEdition,
   pinnedBlocks,
@@ -118,6 +123,13 @@ import {
   selectionIn,
   type Shown,
 } from './bookNotes'
+import {
+  blocksNear,
+  markLookedUp,
+  markMentions,
+  mentionPattern,
+  mentionRanges,
+} from './bookMentions'
 import { BookFootnote } from './BookFootnote'
 import { BookProgress } from './BookProgress'
 import { Linked, Runs } from './BookRuns'
@@ -440,6 +452,13 @@ const answers = (was: LookingUp, now: LookingUp) =>
   was.block === now.block &&
   was.range.start === now.range.start
 
+/**
+ * What the look-up panel draws while it holds its first draw for the cards:
+ * one object throughout, so that the sight check, run for each answer drawn,
+ * runs as the hold ends and not as the dictionary's answer lands under it.
+ */
+const HOLDING: Looked = { kind: 'looking' }
+
 /** Whether `text` is scrolled to exactly `spot`. */
 const scrolledTo = (text: HTMLElement | null, spot?: ScrollSpot) =>
   spot?.left === text?.scrollLeft && spot?.top === text?.scrollTop
@@ -449,6 +468,22 @@ const litRange = ({ range, word }: LookingUp): TextRange =>
   range.start < range.end
     ? range
     : { start: range.start, end: range.start + word.length }
+
+/**
+ * What a tap's look-up lights: its word, and with it the name its cards are
+ * for, which runs `name` units from `from` units after the word's start,
+ * or before it where `from` is below 0. Never less than the word, which is
+ * still what the dictionary's answer is for, and has the particle a name
+ * can end before.
+ */
+const lightRange = ({ range }: LookingUp, name = 0, from = 0): TextRange => {
+  if (name <= 0) return range
+  const start = Math.max(0, range.start + from)
+  return {
+    start: Math.min(range.start, start),
+    end: Math.max(range.end, start + name),
+  }
+}
 
 export function BookReader({
   work,
@@ -554,6 +589,36 @@ export function BookReader({
   // Each look-up a tap or a selection starts is numbered, so a longest word
   // answered after a later look-up, or after the panel closed, is dropped.
   const asking = useRef(0)
+  // The cards of the look-up `asking` numbers, where its edition has
+  // character data. The panel holds its first draw until they and the
+  // dictionary's outcome are both in, so that nothing drawn moves when the
+  // cards come; `waited` once `CARDS_WAIT_MS` has passed since that outcome,
+  // which ends the hold with no cards and drops a later answer. Asked for
+  // where the look-up starts: the Japanese answer replaces `lookingUp`, so an
+  // effect on it would ask twice.
+  const [named, setNamed] = useState<{
+    cards?: CharacterCard[]
+    start?: number
+    length?: number
+    waited?: true
+  }>()
+  const holding =
+    named !== undefined &&
+    (named.cards === undefined || looked.kind === 'looking')
+  const lookedDrawn = holding ? HOLDING : looked
+  const cardsDrawn = holding ? undefined : named?.cards
+  // How much of the text the name on the cards drawn takes, from where the
+  // look-up starts: the light on the word runs on over it as the cards show.
+  const nameLength = cardsDrawn?.length ? named?.length : undefined
+  const nameStart = nameLength === undefined ? undefined : named?.start
+  useEffect(() => {
+    if (!named || named.cards || looked.kind === 'looking') return
+    const wait = window.setTimeout(
+      () => setNamed({ cards: [], waited: true }),
+      CARDS_WAIT_MS,
+    )
+    return () => window.clearTimeout(wait)
+  }, [named, looked])
   // The selection a tap set over the word it looked up, let go of when the
   // look-up closes only if the reader has not selected something else since.
   const light = useRef<Range>(undefined)
@@ -565,16 +630,18 @@ export function BookReader({
   }, [panel])
   // After the panel has taken focus, which may let go of a selection. Only
   // while the edition asked in is drawn: its offsets mean other words in another.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a look-up lights its word as it starts or is answered; a swap alone must not light again the word of one since closed.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a look-up lights its word as it starts or is answered, and again as its cards say how far the name runs; a swap alone must not light again the word of one since closed, and neither must the panel closing.
   useEffect(() => {
-    if (!lookingUp?.tap) return
-    const { block, range } = lookingUp
+    // The cards can be drawn after the panel has closed, when the dictionary
+    // answers a hold late: that must light nothing.
+    if (!lookingUp?.tap || panel !== 'lookup') return
+    const range = lightRange(lookingUp, nameLength, nameStart)
     letGo(light.current)
     light.current =
       range.start < range.end && lookingUp.edition === place?.edition
-        ? selectRange(text.current, block, range)
+        ? selectRange(text.current, lookingUp.block, range)
         : undefined
-  }, [lookingUp])
+  }, [lookingUp, nameLength, nameStart])
   useEffect(() => {
     if (!lookingUp || lookingUp.tap === 'longest') return
     if (!lookingUp.lang) {
@@ -967,6 +1034,69 @@ export function BookReader({
     foundDrawn,
   ])
 
+  // The word a tap looked up stays lit for as long as the look-up's panel is
+  // open, and only in the edition asked in, whose offsets its range is in.
+  // The selection lights it too (`light`), but that is the reader's: a press
+  // in the panel takes it there. So the word is marked on its own as well,
+  // and again as the paragraphs are drawn again, since a range marked ends
+  // with the text node it was in.
+  const litWord = useMemo(() => {
+    if (panel !== 'lookup' || !lookingUp?.tap) return undefined
+    if (lookingUp.edition !== editionKey) return undefined
+    const range = lightRange(lookingUp, nameLength, nameStart)
+    return range.start < range.end
+      ? { block: lookingUp.block, range }
+      : undefined
+  }, [panel, lookingUp, editionKey, nameLength, nameStart])
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the paragraphs drawn again are a trigger and not a read: their text nodes can be new ones.
+  useEffect(() => {
+    if (!litWord) return
+    markLookedUp(rangeIn(text.current, litWord.block, litWord.range))
+    return () => markLookedUp(undefined)
+  }, [litWord, paragraphs])
+  // While the look-up shows a character's card, the other places the text on
+  // screen names that character are marked: the first card's, where the
+  // cards say who is meant. Not the word lit, and only in the edition asked
+  // in, whose names the card's are.
+  const mentioned = useMemo(() => {
+    if (panel !== 'lookup' || lookingUp?.edition !== editionKey) {
+      return undefined
+    }
+    const names = cardsDrawn && mentionPattern(cardsDrawn)
+    return names && { names, lit: litWord }
+  }, [panel, cardsDrawn, lookingUp?.edition, editionKey, litWord])
+  // Marked again as the reader scrolls or turns the page, since only the
+  // blocks near the screen are searched, and as the paragraphs are drawn
+  // again, since a range marked ends with the text node it was in.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the paragraphs drawn again are a trigger and not a read: their text nodes can be new ones.
+  useEffect(() => {
+    const host = text.current
+    if (!host || !mentioned || !edition || comparing) return
+    let frame = 0
+    let marked: string | undefined
+    const mark = () => {
+      frame = 0
+      const near = blocksNear(host)
+      // A scroll that brings no new block near has nothing new to mark.
+      const span = `${near[0]?.dataset.block}-${near.at(-1)?.dataset.block}`
+      if (span === marked) return
+      marked = span
+      markMentions(
+        mentionRanges(near, edition.blocks, mentioned.names, mentioned.lit),
+      )
+    }
+    mark()
+    const onScroll = () => {
+      frame ||= window.requestAnimationFrame(mark)
+    }
+    host.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      host.removeEventListener('scroll', onScroll)
+      window.cancelAnimationFrame(frame)
+      markMentions([])
+    }
+  }, [mentioned, edition, comparing, paragraphs])
+
   // The series the top bar links to, from the library's answer for the work,
   // asked once beside the load and never waited on: until it answers, if it
   // fails, and for a work filed in no series, the bar links to none. No
@@ -1327,11 +1457,12 @@ export function BookReader({
 
   // The word a look-up is on stays in sight, the one thing that may move the
   // place when a docked panel opens: the text set in beside the panel can
-  // reflow it off the screen. Measured for each new word and each new answer,
-  // which can lengthen the word or the panel and which comes after the place
-  // is back. Only while the reader is where they asked it: a Japanese answer
-  // replaces `lookingUp` and not the number in `asking`, so it is the same
-  // look-up, and the position catches a move whose scroll is yet to be sent.
+  // reflow it off the screen. Measured for each new word and each new answer
+  // drawn, which can lengthen the word or the panel and which comes after the
+  // place is back. Only while the reader is where they asked it: a Japanese
+  // answer replaces `lookingUp` and not the number in `asking`, so it is the
+  // same look-up, and the position catches a move whose scroll is yet to be
+  // sent.
   const sightChecked = useRef<{
     asking: number
     word: LookingUp
@@ -1341,11 +1472,11 @@ export function BookReader({
     const host = text.current
     if (panel !== 'lookup' || !lookingUp || !host) return
     const seen = sightChecked.current
-    if (seen?.word === lookingUp && seen.answer === looked) return
+    if (seen?.word === lookingUp && seen.answer === lookedDrawn) return
     sightChecked.current = {
       asking: asking.current,
       word: lookingUp,
-      answer: looked,
+      answer: lookedDrawn,
     }
     if (seen?.asking !== asking.current) movedOn.current = false
     else if (
@@ -1384,7 +1515,7 @@ export function BookReader({
       if (side && seat && moved) seatLookup(seat, word, side)
     }
     sightLeft.current = { left: host.scrollLeft, top: host.scrollTop }
-  }, [panel, lookingUp, looked, place])
+  }, [panel, lookingUp, lookedDrawn, place])
 
   // A hold that closes the look-up lets the text out again, and putting the
   // place back moves the words under the selection it made, so the bar goes
@@ -1835,6 +1966,46 @@ export function BookReader({
     const { left, right, top, bottom } = link.getBoundingClientRect()
     setFootnote({ edition: to, block, near: { left, right, top, bottom } })
   }
+  // The cards look-up `n` asked for end its hold, unless a later look-up has
+  // started, the panel has closed or the wait has run out: drawn then, they
+  // would be another look-up's, or move what is drawn already.
+  const settle = (
+    n: number,
+    cards: CharacterCard[],
+    name?: { start?: number; length?: number },
+  ) => {
+    if (n !== asking.current) return
+    setNamed((was) => (was?.waited ? was : { cards, ...name }))
+  }
+  // Who `from` names. The server looks for a name from its start, and where
+  // a tap sends `before`, the words before the one tapped, from each of
+  // those first, so that a tap on a later word of a name can find it.
+  const askCharacters = (block: number, from: string, before = '') => {
+    if (edition.characters !== true) {
+      setNamed(undefined)
+      return
+    }
+    const n = asking.current
+    setNamed({})
+    getCharacters(work, place.edition, {
+      block,
+      text: charactersText(from),
+      before,
+      earlier: sliceFor(prefs, lookupModule).includeEarlierBooks !== false,
+    }).then(
+      (answer) =>
+        settle(n, answer.characters, {
+          start: answer.start,
+          length: answer.length,
+        }),
+      // A failure leaves the dictionary to show alone, logged rather than
+      // left an unhandled rejection.
+      (why: unknown) => {
+        console.warn('The characters a look-up names were not read', why)
+        settle(n, [])
+      },
+    )
+  }
   // A tap on a word, with the look-up mode on, looks it up there and then:
   // Japanese by the longest dictionary word from the character tapped, which
   // only the server's answer can select, and any other language by the run of
@@ -1851,6 +2022,11 @@ export function BookReader({
       if (!beginsWord(block.text, point.at)) return false
       const lang = JAPANESE_DICTIONARY
       const seq = ++asking.current
+      askCharacters(
+        point.block,
+        block.text.slice(point.at),
+        charactersBefore(block.text, point.at),
+      )
       setLookingUp({
         edition: place.edition,
         block: point.block,
@@ -1893,6 +2069,11 @@ export function BookReader({
     })
     if (!word) return false
     asking.current += 1
+    askCharacters(
+      point.block,
+      block.text.slice(word[0]),
+      charactersBefore(block.text, word[0]),
+    )
     const range = { start: word[0], end: word[1] }
     setLookingUp({
       edition: place.edition,
@@ -2446,11 +2627,16 @@ export function BookReader({
             asking.current += 1
             light.current = undefined
             const block = edition.blocks[selected.block]
+            const word = block.text.slice(
+              selected.range.start,
+              selected.range.end,
+            )
+            askCharacters(selected.block, word)
             setLookingUp({
               edition: place.edition,
               block: selected.block,
               range: selected.range,
-              word: block.text.slice(selected.range.start, selected.range.end),
+              word,
               lang: edition.language,
               offScreen: leftScreen(text.current, selected),
             })
@@ -2481,7 +2667,8 @@ export function BookReader({
       {panel === 'lookup' && lookingUp && (
         <LookupPanel
           word={lookingUp.word}
-          looked={looked}
+          looked={lookedDrawn}
+          cards={cardsDrawn}
           tapsPass={tapsPass}
           onSave={
             notes.ready

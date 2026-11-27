@@ -359,30 +359,88 @@ pub fn epub(dir: &Path, name: &str, paragraphs: &[&str]) -> PathBuf {
 /// [`epub`], its package's metadata holding `dc`, Dublin Core elements written
 /// as `<dc:title>…</dc:title>`.
 pub fn epub_with(dir: &Path, name: &str, dc: &str, paragraphs: &[&str]) -> PathBuf {
-    let body: String = paragraphs.iter().map(|p| format!("<p>{p}</p>")).collect();
-    let metadata =
-        format!(r#"<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">{dc}</metadata>"#);
     let files = [
         ("mimetype", "application/epub+zip".to_string()),
-        (
-            "META-INF/container.xml",
-            r#"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>"#
-                .to_string(),
-        ),
-        (
-            "content.opf",
-            format!(
-                r#"<package xmlns="http://www.idpf.org/2007/opf">{metadata}<manifest><item id="t" href="text.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="t"/></spine></package>"#
-            ),
-        ),
-        (
-            "text.xhtml",
-            format!(r#"<html xmlns="http://www.w3.org/1999/xhtml"><body>{body}</body></html>"#),
-        ),
+        ("META-INF/container.xml", container("content.opf")),
+        ("content.opf", package(dc, &[("t", "text.xhtml")])),
+        ("text.xhtml", xhtml(paragraphs)),
     ];
     let path = dir.join(name);
     write_zip(&path, files);
     path
+}
+
+/// A reflowable EPUB at `dir/name` whose package is `OEBPS/content.opf` and
+/// whose spine is `documents` in the order given, each a document's path in
+/// the archive with its paragraphs, each paragraph one `<p>`; `dc` as
+/// [`epub_with`] takes it. [`crate::read_book`] names each block by its
+/// document's path, which is how a haiyaku log names the document too.
+///
+/// # Panics
+///
+/// If a document's path does not start `OEBPS/`, the package's directory its
+/// manifest href is read against.
+pub fn epub_documents(dir: &Path, name: &str, dc: &str, documents: &[(&str, &[&str])]) -> PathBuf {
+    let ids: Vec<String> = (0..documents.len())
+        .map(|index| format!("d{index}"))
+        .collect();
+    let items: Vec<(&str, &str)> = ids
+        .iter()
+        .zip(documents)
+        .map(|(id, (path, _))| {
+            let href = path
+                .strip_prefix("OEBPS/")
+                .unwrap_or_else(|| panic!("{path} is not in the package's directory, OEBPS/"));
+            (id.as_str(), href)
+        })
+        .collect();
+    let mut files = vec![
+        ("mimetype".to_string(), "application/epub+zip".to_string()),
+        (
+            "META-INF/container.xml".to_string(),
+            container("OEBPS/content.opf"),
+        ),
+        ("OEBPS/content.opf".to_string(), package(dc, &items)),
+    ];
+    files.extend(
+        documents
+            .iter()
+            .map(|(path, paragraphs)| ((*path).to_string(), xhtml(paragraphs))),
+    );
+    let path = dir.join(name);
+    write_zip(&path, files);
+    path
+}
+
+/// An EPUB's `META-INF/container.xml`, naming its package at `package`.
+fn container(package: &str) -> String {
+    format!(
+        r#"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="{package}"/></rootfiles></container>"#
+    )
+}
+
+/// A package holding `dc` in its metadata and `items`, each an id and an
+/// href, as its manifest and, in the order given, its spine.
+fn package(dc: &str, items: &[(&str, &str)]) -> String {
+    let manifest: String = items
+        .iter()
+        .map(|(id, href)| {
+            format!(r#"<item id="{id}" href="{href}" media-type="application/xhtml+xml"/>"#)
+        })
+        .collect();
+    let spine: String = items
+        .iter()
+        .map(|(id, _)| format!(r#"<itemref idref="{id}"/>"#))
+        .collect();
+    format!(
+        r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">{dc}</metadata><manifest>{manifest}</manifest><spine>{spine}</spine></package>"#
+    )
+}
+
+/// A spine document holding each of `paragraphs` as a `<p>`.
+fn xhtml(paragraphs: &[&str]) -> String {
+    let body: String = paragraphs.iter().map(|p| format!("<p>{p}</p>")).collect();
+    format!(r#"<html xmlns="http://www.w3.org/1999/xhtml"><body>{body}</body></html>"#)
 }
 
 /// A new zip at `path` holding `entries` in the order given, each with zip's

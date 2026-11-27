@@ -12,6 +12,7 @@ pub mod account;
 pub mod backup;
 pub mod book_pins;
 pub mod browse;
+pub mod characters;
 pub mod comicinfo;
 pub mod credential;
 pub mod derive;
@@ -51,10 +52,11 @@ pub mod state;
 pub mod structure;
 pub mod watch;
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -429,6 +431,11 @@ pub struct Library {
     /// Per library, not per process, so that two stores open in one process
     /// never order each other's saves.
     progress_order: state::ProgressOrder,
+    /// Why character cards are off, `None` while they are on. Decided at open
+    /// for the `Library`'s life: haiyaku's tables are not migrated again
+    /// while it lives, so a reason found then still holds.
+    cards_off: Option<String>,
+    titles: characters::Titles,
 }
 
 impl Library {
@@ -468,6 +475,8 @@ impl Library {
     /// Returns an error if the file cannot be opened (a missing parent directory
     /// or a permission refusal, naming the path), if the backup taken before a
     /// migration fails, leaving it unmigrated, or if applying the schema fails.
+    /// Nothing of haiyaku's refuses it: haiyaku's migrate failing, or the
+    /// backup before it, switches character cards off ([`Self::cards_off`]).
     pub fn open(path: &Path) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -490,20 +499,74 @@ impl Library {
         // `-wal` afresh, dated now, which would count every open as a change.
         let written = path.as_deref().and_then(backup::last_written);
         Self::configure(&mut conn)?;
-        if let Some(db) = &path
-            && let Some((current, target)) = schema::pending_migration(&conn)?
-            && !backup::stands_for(db, current, target, written)
-        {
-            let name = backup::name_before_migration(&conn, target)?;
-            backup::before_migration(&conn, db, &name)?;
-        }
+        let mut cards_off = match &path {
+            Some(db) => Self::back_up_before_migrating(&conn, db, written)?,
+            None => None,
+        };
         schema::migrate(&conn)?;
+        if cards_off.is_none() {
+            cards_off = haiyaku::store::migrate(&conn).err().map(|e| e.to_string());
+        }
+        if let Some(why) = &cards_off {
+            // Not `eprintln!`, which panics when nothing reads stderr.
+            let _ = writeln!(std::io::stderr(), "character cards are off: {why}");
+        }
         Ok(Self {
             conn: Mutex::new(conn),
             path,
             deriving: AtomicBool::new(false),
             progress_order: state::ProgressOrder::default(),
+            cards_off,
+            titles: characters::Titles::default(),
         })
+    }
+
+    /// The backup an open takes before migrating `db` (O263), unless one
+    /// stands for it already: before taiyaku's migrations when any are pending,
+    /// which holds the database before haiyaku's too, or else before
+    /// haiyaku's. taiyaku's failing refuses the open, as a migration with no
+    /// way back must. haiyaku's failing answers why cards are off and its
+    /// migrate is skipped, so the library still opens.
+    fn back_up_before_migrating(
+        conn: &Connection,
+        db: &Path,
+        written: Option<SystemTime>,
+    ) -> Result<Option<String>, String> {
+        let (before, current) = if let Some((current, target)) = schema::pending_migration(conn)? {
+            (backup::Before::Taiyaku(target), current)
+        } else if let Some(current) = haiyaku_pending(conn)? {
+            (
+                backup::Before::Haiyaku(haiyaku::store::SCHEMA_VERSION),
+                current,
+            )
+        } else {
+            return Ok(None);
+        };
+        if backup::stands_for(db, before, current, written) {
+            return Ok(None);
+        }
+        let taken = backup::name_before_migration(conn, before)
+            .and_then(|name| backup::before_migration(conn, db, &name));
+        match (before, taken) {
+            (_, Ok(())) => Ok(None),
+            (backup::Before::Taiyaku(_), Err(why)) => Err(why),
+            (backup::Before::Haiyaku(_), Err(why)) => Ok(Some(why)),
+        }
+    }
+
+    /// Why character cards are off, or `None` while they are on: the text of
+    /// haiyaku's error, or of the backup before its migration that could not
+    /// be taken.
+    #[must_use]
+    pub fn cards_off(&self) -> Option<&str> {
+        self.cards_off.as_deref()
+    }
+
+    /// The titles character cards name books and chapters by, kept for this
+    /// library's life.
+    #[must_use]
+    pub fn titles(&self) -> &characters::Titles {
+        &self.titles
     }
 
     /// Everything a fresh connection needs before any query can safely touch
@@ -947,6 +1010,20 @@ impl Drop for Nested<'_> {
             ));
         }
     }
+}
+
+/// haiyaku's schema version, its absent tables as 0, when its migrate has work
+/// to do in a database that holds a library. A new file has nothing to back
+/// up, and a version haiyaku cannot read is no work for a backup: its migrate
+/// fails on it and switches cards off.
+fn haiyaku_pending(conn: &Connection) -> Result<Option<u32>, String> {
+    if schema::version(conn)? == 0 {
+        return Ok(None);
+    }
+    Ok(haiyaku::store::schema_version(conn)
+        .ok()
+        .map(|stored| stored.unwrap_or(0))
+        .filter(|&current| current < haiyaku::store::SCHEMA_VERSION))
 }
 
 /// Refuse a SQLite that cannot do FTS5, before any schema is applied.

@@ -200,7 +200,9 @@ export function Backup() {
               <code>taiyaku library backup</code> from cron, with{' '}
               <code>--keep N</code> to prune old ones. Before each migration the
               server takes one of its own, whose name ends in{' '}
-              <code>-before-v</code> and the schema version it migrates to;{' '}
+              <code>-before-v</code> and the schema version it migrates to, or,
+              when only haiyaku’s character tables migrate, in{' '}
+              <code>-before-haiyaku-v</code> and haiyaku’s schema version;{' '}
               <code>--keep</code> leaves those alone, so delete them by hand.
             </p>
           </details>

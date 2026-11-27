@@ -1,9 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   blockAt,
   columns,
   type Block,
   type Book,
+  CHARACTERS_BEFORE_UNITS,
+  charactersBefore,
+  charactersText,
   excerpt,
   excerptsIn,
   type Mark,
@@ -13,6 +16,7 @@ import {
   counterpart,
   editionOrder,
   firstSentences,
+  getCharacters,
   lineAt,
   entryAt,
   nextEdition,
@@ -27,6 +31,7 @@ import {
   starts,
   through,
 } from '../src/book'
+import { naming } from './support/characters'
 
 /**
  * `en` the hub; `ko` splits `en`'s block 1 in two; `fr` lacks `en`'s block 2;
@@ -543,5 +548,123 @@ describe('a line', () => {
   it('is none before the first number, or where the book prints none', () => {
     expect(lineAt(blocks, 0)).toBeUndefined()
     expect(lineAt([verse(null)], 0)).toBeUndefined()
+  })
+})
+
+describe('charactersText', () => {
+  it('cuts at 128 units and never inside a pair', () => {
+    expect(charactersText('a'.repeat(200))).toBe('a'.repeat(128))
+    expect(charactersText(`${'a'.repeat(127)}😀${'b'.repeat(10)}`)).toBe(
+      'a'.repeat(127),
+    )
+    // Exactly 128 units, the 128th the second half of a pair.
+    expect(charactersText(`${'a'.repeat(126)}😀`)).toBe(`${'a'.repeat(126)}😀`)
+    expect(charactersText('')).toBe('')
+  })
+})
+
+describe('charactersBefore', () => {
+  /** Twenty five-unit words, a word starting at every multiple of 5. */
+  const WORDS = 'lamp '.repeat(20)
+
+  it('is everything before the tap in a block shorter than the bound, its closing space kept', () => {
+    expect(charactersBefore('Then Ned Reed kept the lamp.', 9)).toBe(
+      'Then Ned ',
+    )
+    expect(charactersBefore('Ned Reed kept the lamp.', 0)).toBe('')
+  })
+
+  it('starts at a word, never at the white space before one', () => {
+    expect(charactersBefore('  Then Ned', 7)).toBe('Then ')
+    // 64 units back from the tap is the second of two spaces.
+    expect(charactersBefore(`ab  ${'c'.repeat(62)} Reed`, 67)).toBe(
+      `${'c'.repeat(62)} `,
+    )
+  })
+
+  it('takes the whole bound where it begins at a word, and not a unit more', () => {
+    const before = charactersBefore(`xx ${'lampa '.repeat(10)}abc Reed`, 67)
+    expect(before).toBe(`${'lampa '.repeat(10)}abc `)
+    expect(before).toHaveLength(CHARACTERS_BEFORE_UNITS)
+    // A word starts 65 units back, and the next 58.
+    expect(charactersBefore(` q${'lampa '.repeat(10)}abc Reed`, 66)).toBe(
+      `${'lampa '.repeat(9)}abc `,
+    )
+  })
+
+  it('drops the word the bound falls inside, and begins at the next', () => {
+    // 64 units back from the tap is the `a` of a `lamp`.
+    expect(charactersBefore(`${WORDS}Reed`, 100)).toBe('lamp '.repeat(12))
+    // And here the space before one, which is no word's start either.
+    expect(charactersBefore(`xxx ${'lamp '.repeat(12)}ab Reed`, 67)).toBe(
+      `${'lamp '.repeat(12)}ab `,
+    )
+  })
+
+  it('is empty past the bound in a text with no white space, and all of it within', () => {
+    expect(charactersBefore('灯子はそこで火を見ていた。', 5)).toBe('灯子はそこ')
+    expect(charactersBefore(`${'あ'.repeat(100)}灯子`, 100)).toBe('')
+    expect(charactersBefore(`${'あ'.repeat(64)}灯子`, 64)).toBe('あ'.repeat(64))
+  })
+
+  it('never cuts inside a pair, which encodeURIComponent would refuse', () => {
+    // 64 units back from the tap is the second half of 😀.
+    const spaced = `a😀 ${'lampa '.repeat(10)}t Reed`
+    expect(spaced.charCodeAt(spaced.indexOf('Reed') - 64)).toBe(0xde00)
+    expect(charactersBefore(spaced, spaced.indexOf('Reed'))).toBe(
+      `${'lampa '.repeat(10)}t `,
+    )
+    const unspaced = `${'😀'.repeat(32)}あ灯子`
+    expect(unspaced.charCodeAt(65 - 64)).toBe(0xde00)
+    expect(charactersBefore(unspaced, 65)).toBe('')
+  })
+})
+
+describe('getCharacters', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('sends the words before the tap last in the query, and none where there are none', async () => {
+    const fetch = vi.fn(async () => Response.json(naming()))
+    vi.stubGlobal('fetch', fetch)
+    await getCharacters('w', 'en', {
+      block: 3,
+      text: 'Reed kept',
+      before: 'Then Ned ',
+      earlier: true,
+    })
+    await getCharacters('w', 'en', {
+      block: 3,
+      text: 'Ned Reed',
+      before: '',
+      earlier: true,
+    })
+    expect(fetch.mock.calls).toEqual([
+      [
+        '/api/works/w/en/book/characters?block=3&text=Reed%20kept&earlier=1&before=Then%20Ned%20',
+      ],
+      ['/api/works/w/en/book/characters?block=3&text=Ned%20Reed&earlier=1'],
+    ])
+  })
+
+  it('asks the edition’s route with block, text and earlier', async () => {
+    const fetch = vi.fn(async () =>
+      Response.json({
+        known: false,
+        scope: null,
+        narrowed: null,
+        characters: [],
+      }),
+    )
+    vi.stubGlobal('fetch', fetch)
+    await getCharacters('w x', 'en', {
+      block: 3,
+      text: 'Ned Reed',
+      earlier: false,
+    })
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/works/w%20x/en/book/characters?block=3&text=Ned%20Reed&earlier=0',
+    )
   })
 })

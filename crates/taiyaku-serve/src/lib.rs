@@ -12,6 +12,7 @@ mod book;
 mod cache_root;
 mod cache_sweep;
 mod cbz;
+mod characters;
 mod cli_watch;
 mod composite;
 /// Spec C4 §6's rule-editor routes: the admin-only CRUD, preview and import

@@ -436,6 +436,143 @@
   margin: 0 0 var(--space-2);
 }
 
+/* A character's card, above the dictionary's entries: a rule between it and
+ * the next card or the first entry, as between entries, and lines loose
+ * enough to read a long card down. */
+.book-lookup-characters > .book-lookup-character {
+  padding-block: var(--space-3);
+  border-top: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  line-height: 1.45;
+}
+
+.book-lookup-character > h3 {
+  margin: 0 0 var(--space-2);
+}
+
+/* Who the character is, as labels beside their values, quieter than the
+ * facts below so the eye lands on those. */
+.book-lookup-about {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  font-size: 0.92em;
+}
+
+.book-lookup-about > dt {
+  opacity: 0.65;
+}
+
+.book-lookup-about > dd {
+  margin: 0;
+}
+
+/* The facts with one other character, under that character's name said
+ * once. */
+.book-lookup-relation {
+  margin-block-start: var(--space-3);
+}
+
+.book-lookup-relation > h4 {
+  margin: 0 0 var(--space-1);
+  font-size: inherit;
+  font-weight: 600;
+}
+
+.book-lookup-relation > ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A fact is the whole row to press, so it looks like a line of the list
+ * and not like a control: the mark before it says it opens, and which way
+ * it stands. */
+.book-lookup-fact-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.book-lookup-fact-row::before {
+  content: "\25B8";
+  flex: none;
+  width: 1em;
+  opacity: 0.55;
+}
+
+.book-lookup-fact-row[aria-expanded="true"]::before {
+  content: "\25BE";
+}
+
+.book-lookup-fact-row:hover,
+.book-lookup-fact-row[aria-expanded="true"] {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.book-lookup-fact-row:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
+}
+
+/* A fact the books took back is struck through and says so in a word, so
+ * the mark does not rest on colour. */
+.book-lookup-fact[data-overturned] .book-lookup-fact-note {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.book-lookup-fact-tag {
+  flex: none;
+  margin-inline-start: auto;
+  padding: 0 var(--space-1);
+  border: 1px solid color-mix(in srgb, currentColor 50%, transparent);
+  border-radius: 3px;
+  font-size: 0.8em;
+  cursor: help;
+}
+
+/* What an open fact adds, set in under the row's text. */
+.book-lookup-more {
+  margin: var(--space-1) 0 var(--space-2);
+  padding-inline-start: calc(var(--space-2) + 1em + var(--space-2));
+  font-size: 0.92em;
+}
+
+.book-lookup-more > * {
+  margin: 0 0 var(--space-1);
+}
+
+.book-lookup-quote {
+  padding-inline-start: var(--space-3);
+  border-inline-start: 2px solid
+    color-mix(in srgb, currentColor 30%, transparent);
+  font-style: italic;
+}
+
+.book-lookup-quote > * {
+  margin: 0;
+}
+
+.book-lookup-where {
+  opacity: 0.65;
+}
+
+.book-lookup-overturn {
+  margin-block-start: var(--space-2);
+}
+
 /* At phone size the look-up's panel goes over the text, so it sits against
  * the edge of the screen across from its word (`seatLookup`), clear of the
  * bars showing and of the safe area. The word and Close stay in view as the
@@ -664,6 +801,28 @@
   background: color-mix(in srgb, currentColor 22%, transparent);
   outline: 2px solid currentColor;
   outline-offset: 1px;
+}
+
+/* The word a look-up is on (`markLookedUp`), for as long as its panel is
+ * open. It is the selection as well until a press in the panel takes that,
+ * so it is drawn as the selection is (`base.css`): the word looks the same
+ * with the selection on it or gone. */
+::highlight(book-lookup-word) {
+  background-color: var(--accent);
+  color: var(--on-accent);
+}
+
+/* The other places the text on screen names the character whose card the
+ * look-up shows (`bookMentions.ts`). The word looked up is the selection,
+ * filled with the accent; these are a line under a faint wash of it, so the
+ * two differ by shape as well as by strength, and neither is a note's tint
+ * or a search match's outline. */
+::highlight(book-mention) {
+  background-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.2em;
 }
 
 /* Find in a book: the box across the panel, each match's chapter, and the
