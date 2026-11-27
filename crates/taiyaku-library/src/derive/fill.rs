@@ -289,7 +289,7 @@ pub(super) fn early_writes(
     waiting: &super::Waiting,
     placed: &Placed,
 ) -> Result<BTreeSet<GroupKey>, String> {
-    let named = named_directories(conn, &waiting.entries)?;
+    let named = named_directories(conn, &waiting.entries, &waiting.frozen)?;
     let mut series: HashMap<&str, Option<i64>> = HashMap::new();
     let mut writes = BTreeSet::new();
     for (key, group) in groups {
@@ -373,13 +373,18 @@ fn bytes_held(conn: &Connection, group: &Group) -> Result<bool, String> {
 /// holds while it waits to be hashed again, which a pair still names when
 /// only the file's time changed: hashed at the full derive, it joins, and its
 /// directory follows. Also the directory of each entry of `waiting`, those
-/// still to hash, that may be a matched file moved since a walk dropped it.
+/// still to hash, that may be a matched file moved from its member's path.
 fn named_directories(
     conn: &Connection,
     waiting: &HashSet<(i64, String)>,
+    frozen: &HashSet<i64>,
 ) -> Result<HashMap<i64, HashSet<String>>, String> {
     let failed = |e: rusqlite::Error| format!("reading the directories a stored match names: {e}");
     let mut named: HashMap<i64, HashSet<String>> = HashMap::new();
+    // Bound to the stray statement as a JSON array. The job's own set, not `root.paused_at`: a
+    // directory paused while the job hashes it is read as walked, and its files can move in it.
+    let ids: Vec<String> = frozen.iter().map(i64::to_string).collect();
+    let frozen = format!("[{}]", ids.join(","));
     for (only_waiting, sql) in [
         (
             false,
@@ -389,14 +394,14 @@ fn named_directories(
           WHERE sha256 IN (SELECT sha256 FROM named)
              OR held_sha256 IN (SELECT sha256 FROM named)",
         ),
-        // A stray, a digest a match names that a member holds and no entry holds by digest or
-        // held reading, is a matched file or folder whose entry a walk has dropped. Moved, it
-        // keeps its page count and its new row has no digest until hashed, so a row with no
-        // digest and no held reading at a stray's count names its directory (O450), but only
-        // while the pass waits on it, a folder volume as a file. A row it does not wait on
-        // moves nothing written early: no derive of the job stages it, whoever hashes it, or
-        // the job reads its directory frozen, where rule 2 holds every group. With no match
-        // rows there is no stray, and a first import waits for nothing more.
+        // A stray is a matched file that may have moved: a member's digest a match names that no
+        // entry holds, or (O551) that no member of its bytes in its directory has as the digest of
+        // the entry at its path, as a copy or the old path's row keeps a moved file's digest, and
+        // one at home elsewhere may become its copy at the full derive. A frozen directory's held
+        // reading will do: its files do not move. Moved, a stray waits with no digest at its page
+        // count, so such a row the pass waits on names its directory (O450, O550); any other moves
+        // nothing written early, as no derive of the job stages it or rule 2 holds its frozen
+        // directory's groups. No match rows, no stray. `+` keeps the lookup on the digest's index.
         (
             true,
             "WITH named (sha256) AS (SELECT sha_a FROM content_match
@@ -406,15 +411,29 @@ fn named_directories(
                                    UNION SELECT held_sha256 FROM scan_entry
                                     WHERE held_sha256 IN (SELECT sha256 FROM named))
          SELECT root_id, rel_path FROM scan_entry
-          WHERE sha256 IS NULL AND held_sha256 IS NULL
-            AND pages IN (SELECT pages FROM member
-                           WHERE sha256 IN (SELECT sha256 FROM named)
-                             AND sha256 NOT IN (SELECT sha256 FROM present))",
+          WHERE sha256 IS NULL
+            AND pages IN (SELECT m.pages FROM member m
+                           WHERE m.sha256 IN (SELECT sha256 FROM named)
+                             AND (m.sha256 NOT IN (SELECT sha256 FROM present)
+                                  OR (m.root_id IS NOT NULL AND NOT EXISTS (
+                                        SELECT 1 FROM member m2
+                                          JOIN root r ON r.id = m2.root_id
+                                          JOIN scan_entry e ON e.root_id = r.id
+                                           AND e.rel_path
+                                               = substr(m2.path, length(rtrim(r.path, '/')) + 2)
+                                           AND (e.sha256 = m2.sha256
+                                                OR (e.held_sha256 = m2.sha256
+                                                    AND r.id IN (SELECT value FROM json_each(?1))))
+                                         WHERE m2.sha256 = m.sha256
+                                           AND +m2.root_id = m.root_id))))",
         ),
     ] {
         let mut stmt = conn.prepare(sql).map_err(failed)?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .query_map(
+                rusqlite::params_from_iter(only_waiting.then_some(&frozen)),
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
             .map_err(failed)?;
         for row in rows {
             let entry = row.map_err(failed)?;

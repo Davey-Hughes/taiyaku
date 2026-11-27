@@ -396,6 +396,24 @@ above):
   derive stages no such entry, so beside one a pass writes what the full
   derive writes, and in a paused directory it reads frozen rule 2 holds
   every group. A delay only; rule 3 is not reversed.*
+  *Note, 2026-11-25: by the owner's rulings of 2026-11-25 (O550, O551) a
+  stray is a digest a match row names that a member holds and that either
+  no entry holds, by its digest or its held reading, or, for a member with
+  a root, that no member of those bytes in that member's own directory
+  sits at a path whose entry holds them as its digest or, in a directory
+  the job reads frozen, as its held reading; and the stray statement reads
+  an entry that holds a reading as well. So the claim also holds for a matched file moved onto
+  the path of a file already there, for one moved while another directory
+  holds a copy of its bytes, and for one moved away with another file
+  written at its old path, each held back until it is hashed. The cost
+  grows: while no other member of its bytes is at home in its directory, a
+  matched file touched where it sits makes a stray until the queue hashes
+  it again, and one replaced by other bytes until the job's end; in a
+  directory the job reads frozen it makes none. It does not hold for a
+  directory removed from the library and added again, whose match rows
+  outlive its members (O580), nor for a matched member with no root moved
+  away with another file written at its old path, a state reached only by
+  a hand write to the store. A delay only; rule 3 is not reversed.*
 - At the full derive the group is the same. `held_work` finds its row,
   `Placed::claims` names this group for its content key, and `unchanged`
   finds it written: no write lock, no rewrite (derive.rs:2380-2391). A
@@ -782,6 +800,13 @@ store and roots on a scratch copy of the local test library
    after that entry is hashed, or to the full derive if the queue found it
    gone, and an entry with no digest that the queue does not hash holds
    nothing. The call stands.*
+   *Note, 2026-11-25: rule 3 now also reads an entry that holds a reading,
+   and a stray also takes in a matched member with a root and no member of
+   its bytes at home in its own directory (O550, O551); see the second note
+   under rule 3 in §7. A first import still loses nothing to it; a matched
+   file touched or replaced where it sits holds back a directory with a
+   waiting entry at its page count until it is hashed again, or to the
+   job's end. The call stands.*
 5. **A pass runs** once a group has completed and max(10 s, 4 × the last
    pass's time) has passed since the last one ended; never after the
    last digest.

@@ -32962,8 +32962,11 @@ Each case of the first three also asserts where raw 4 ends the job. The moved
 and gone tests failed on the unfixed code and the first control passed; the
 folder test failed with directory rows left out of the statement. The second
 control,
-`a_pass_writes_a_volume_beside_a_file_of_an_unmatched_or_waiting_members_page_count`,
-runs one pass with Zz 1 hashed beside a Zz 2 still to hash at 3 pages, once
+`a_pass_writes_a_volume_beside_a_file_of_an_unmatched_members_page_count`
+(then one test; its second case has been
+`a_pass_leaves_a_volume_beside_a_file_of_a_waiting_matched_files_page_count`
+since O551 closed, and asserts the hold; see "Strays: O550, O551 and O336
+(2026-11-25)"), runs one pass with Zz 1 hashed beside a Zz 2 still to hash at 3 pages, once
 with no match rows and once with the joined raw 5 waiting to be hashed again,
 and asserts that Zz 1 is written. It was written after the first whole-branch
 review.
@@ -33094,6 +33097,8 @@ entry by an exclude glob.
 
 **O550 and O551, two gaps the fix leaves.** Each is a row that waits on the
 owner's ruling, and neither is built.
+*Both have since closed, on the owner's rulings; see "Strays: O550, O551 and
+O336 (2026-11-25)", below.*
 
 O550 is a matched file moved onto the path of a file already there. A scratch
 test, run once on the branch with the narrowing in and then removed; its
@@ -33256,3 +33261,287 @@ test passed (`PASS [   2.157s]`); with the sleep taken out and the second
 archive cut from another seed, it failed at the same assertion. That the
 gate's own failure fell across a step is inferred from its identical panic
 text, not observed.
+
+## Strays: O550, O551 and O336 (2026-11-25)
+
+The rows in `docs/status.md` say what the strays PR builds. The plan, the
+ledger, the recons, the task reports and their logs are under
+`.superpowers/sdd/2026-11-25-o550-o551/`, which is not committed. Every test
+named below is in `crates/taiyaku-library/src/derive/fill/tests.rs` but the
+ones this section gives as `derive/tests.rs`'s. Each mutation was put in by
+hand and taken out, on the branch as it stood when its task ran; no
+mutation sweep ran for the branch. Raw 5 is volume 5 of "Oshinoko",
+English 5 volume 5 of "Oshi", and Raw2 a third directory.
+
+**The rulings.** The owner ruled on 2026-11-25, in this order. O550: A, the
+stray statement reads a row that holds a reading too. O551: P, a matched
+member whose own path no entry holds is a stray, narrowed to hold only where
+no member of those bytes sits at a path an entry holds; then Q in its
+place, where that entry must hold the bytes as its current digest, after a
+recon found a third layout P leaves open, a joined file moved away under
+another volume's name and another file written at its old path; then Q
+exempting a directory the job reads frozen, whose held reading will do,
+read from the job's frozen set and never from the store's pause mark.
+`present`'s held-reading arm is kept, since it matches the rule as ruled and
+holds nothing wider. A frozen directory that read one moved file at two
+paths reads it once, at the member's path, which closes O336 too. Last, Q
+asks per directory: a member at home answers only in the stray member's own
+directory. That O336 closes only where the directory holds a member of
+those bytes at a path of its own, with O583 opened where it holds them only
+as a copy, is the controller's ruling, under the owner's word to do what it
+recommended, on the frozen read's review.
+
+**O550.**
+`a_pass_leaves_a_volume_beside_a_joined_file_renamed_onto_another_files_path`
+renames raw 5 onto raw 7's path beside a new raw 4, with raw 7 at raw 5's
+page count and at another, and asserts that no pass writes raw 4 and that
+the job ends with it in the English series; a fixture assertion pins that
+the walk left raw 7's digest as the row's held reading.
+`a_file_changed_in_place_at_a_strays_page_count_holds_its_directory_until_it_is_hashed`
+is A's cost: beside a stray, a file a walk finds rewritten in place at the
+stray's page count, in its directory and in another, holds its directory
+back until the pass after it is hashed, and the job's end and report equal
+one derive's over a copy of the store taken before the job. The third case
+of `a_pass_leaves_a_volume_beside_a_file_of_a_gone_matched_files_page_count`
+flips to the hold, its row now made by a walk. Put wrong by hand:
+
+- nothing, on the statement as it was, and `held_sha256 IS NULL` put back:
+  all three;
+- the page match dropped, keeping the test for a stray: the second, the gone
+  test at its second case, and the tests of the entries a pass waits on, not
+  the first;
+- the `Waiting` filter removed: none of the three, and the tests of the
+  entries a pass waits on;
+- a control, the copy of the store left underived: the second, at its end
+  comparison, which none of the mutations above fails.
+
+**O551, Q.**
+
+- `a_pass_leaves_a_volume_beside_a_joined_volume_moved_while_its_copy_stands`:
+  raw 5, a file and then a folder volume, with a byte copy in Raw2, moved
+  into a new folder beside a new raw 4; no pass writes raw 4, and the job
+  ends with it in the English series.
+- `a_joined_file_deleted_while_its_copy_stands_holds_its_page_count_back_for_one_job`.
+- `a_pass_leaves_a_volume_beside_a_joined_file_renamed_onto_a_path_while_its_copy_stands`:
+  O550's rename, with a copy in Raw2.
+- `a_pass_leaves_a_volume_beside_a_joined_volume_moved_from_a_path_that_keeps_its_row`:
+  the third layout, and a folder volume's pages moved out.
+- `a_joined_file_changed_where_it_sits_holds_its_page_count_back_until_its_bytes_are_there`:
+  Q's cost. Touched, a series queued before the file waits one pass and one
+  queued after is written early; replaced by other bytes, one queued after
+  is not written early in that job; in both the next job writes early.
+- `a_pass_leaves_a_volume_beside_a_file_of_a_waiting_matched_files_page_count`:
+  the second case of an O450 control, flipped to the hold and split out
+  under its own name.
+- Holding nothing:
+  `a_pass_writes_a_volume_beside_a_file_of_a_rootless_matched_members_page_count`,
+  a member given no root by a hand `UPDATE`, whose second case, the digest
+  only a held reading, pins `present`'s held-reading arm;
+  `a_pass_writes_a_volume_beside_a_joined_file_moved_while_its_duplicate_stands`,
+  a byte copy in raw 5's own directory as a member of its own; and
+  `a_pass_writes_a_volume_beside_a_file_of_a_present_joined_folder_volumes_page_count`.
+
+Put wrong by hand, on Q as first built:
+
+- nothing (the statement before Q), and Q's arm removed: the copy, deleted,
+  renamed, third-layout, changed-where-it-sits and waiting tests;
+- the entry's digest test dropped, which is the narrowed P: the
+  third-layout, changed-where-it-sits and waiting tests;
+- the lookup read from the member's own path: the duplicate test;
+- `NOT EXISTS` inverted, and the path offset one short or one long: the
+  deleted, rootless, duplicate and changed-where-it-sits tests, and
+  `a_pass_writes_a_volume_beside_a_file_of_a_present_matched_files_page_count`;
+- the root guard dropped: the rootless test;
+- the lookup's root test dropped: the copy, deleted and renamed tests;
+- `held_sha256 IS NULL` put back: the renamed test and O550's three;
+- `present`'s held-reading arm dropped: the rootless test's second case;
+- a folder entry never answering by its digest, in fix round 1: the folder
+  volume's test alone.
+
+The offset's `rtrim(r.path, '/')` is not watched: it differs from
+`length(r.path)` only for a root at `/`, which no fixture can make.
+
+**The frozen exemption.**
+
+- `a_matched_file_changed_in_a_directory_the_job_reads_frozen_holds_nothing_back`:
+  raw 5 touched, walked and its directory paused; each of two jobs over the
+  English directory writes early beside a file at raw 5's page count.
+- `a_pass_leaves_a_volume_beside_a_joined_volume_moved_where_the_job_does_not_read_frozen`:
+  the third layout in the raws, paused and named fresh to the job, as a
+  Scan whose unpause the store refused is; paused once the job has begun, as
+  the cancel of a second scan waiting behind it pauses; and with another
+  directory paused. Raw 4 waits in each.
+- `a_volume_a_pass_writes_beside_a_joined_volume_moved_out_of_a_frozen_directory_ends_as_written`.
+- `a_frozen_row_holding_another_files_reading_is_not_the_member_at_home`: a
+  frozen row at raw 5's path holding another file's reading, reached through
+  a cancelled job with no hand write, a match naming the other file's bytes
+  too.
+
+Put wrong by hand:
+
+- the exemption removed, or the frozen set left empty: the changed and
+  moved-out tests and the other-reading test's first case;
+- the exemption read from `root.paused_at`: the fresh test;
+- the frozen test inverted: all four, and three of Q's;
+- exempt once the job reads any directory frozen: the fresh test, with
+  another directory paused;
+- the exemption taking any held reading, or any held reading a match names:
+  the other-reading test's second case.
+
+**O336, the frozen read, and Q per directory.** A recon found that a
+frozen directory read a joined file moved and hashed before a Cancel twice:
+the old path's row by its held reading, its member still there, and the
+moved row by its digest. `place` makes two files of one digest under one
+directory two members, so while the pause stood raw 5 showed on its work at
+the old path and as a new "Oshinoko" 6 at the moved one, or, where its
+member had already moved, as the new volume alone. A Cancel after the moved
+file is hashed reaches it, before raw 5's work is written or after; so does
+a stop with no pause and a later Cancel; and so does a later Cancel with
+none in the job that hashed the file, where the old path's file makes no
+member (an empty archive, a folder whose pages moved out). A pause landing
+mid-job and a move inside a paused directory do not. `frozen_entries` now
+reads a frozen directory's bytes once, at its member's path, which also
+sets aside O336's new copy. Both need a row of the directory at a member's
+path of those bytes. A directory that holds them only as a copy, its
+member's path in another directory, has none, so there a new byte copy
+still joins while paused and a moved copy is still read at both paths: the
+task's review showed each in a scratch run
+(`logs/task-5-review-scratch-o336-copy-held-at-commit.log`,
+`logs/task-5-review-scratch-s1-copy-held-at-commit.log`), and O583 holds
+it.
+
+- `a_frozen_directory_reads_a_moved_files_bytes_once_at_its_members_path`,
+  a Cancel once both files are hashed, and a stop and a later Cancel: one
+  member, at the old path, on English 5's work.
+- `a_frozen_directory_keeps_a_moved_file_on_its_work_where_its_old_row_holds_its_reading`,
+  a Cancel once raw 5's work is written, an empty archive and an emptied
+  folder: one member, at the moved path, on English 5's work.
+- `a_frozen_directory_keeps_a_moved_file_on_its_work_after_a_scan_and_a_second_cancel`:
+  the same through a pressed Scan, whose job leaves the old row's reading
+  held (O581), and a second Cancel.
+- `derive/tests.rs`'s
+  `a_copy_added_to_a_paused_directory_and_hashed_before_the_cancel_waits_for_the_scan`:
+  O336.
+- `derive/tests.rs`'s `a_paused_directory_keeps_each_copy_of_a_file_changed_under_the_pause`:
+  a guard, green before the change too.
+- `derive/tests.rs`'s `a_rules_save_under_a_pause_reads_the_chapters_it_makes_as_they_are`:
+  a rules save under a pause makes Foo's twin a chapter beside Foo's
+  member, and Bar's member a chapter beside Bar's twin; Foo's chapter is
+  counted, and Bar's twin holds its bytes.
+
+With the frozen read in, Raw2 paused and holding a byte copy at raw 5's path
+and a second file of its bytes, a member of its own, the second file became
+the moved raw 5's copy at the full derive, the join applied, and raw 4
+followed into "Oshi"; Q, which took any member of the bytes at home as raw
+5's, let a pass write raw 4 in "Oshinoko" first. With no pause and the Raw2
+copy deleted the same happened without the frozen read, a hole in Q as
+built. Asked per directory, both hold:
+`a_pass_leaves_a_volume_beside_a_joined_file_moved_while_a_frozen_duplicate_stands`
+and
+`a_pass_leaves_a_volume_beside_a_joined_file_moved_while_its_duplicate_stands_in_another_directory`.
+The cost is a hold for nothing where, with no pause and nothing deleted,
+the Raw2 member stays a member of its own at the full derive. The task's
+review found two more such layouts: the same with Raw2 also on raw 5's
+`member_root`, and raw 5 moved into Raw2 beside Raw2's member of its
+bytes. In each, no pass writes raw 4 and it ends in "Oshinoko", where a
+pass writes it with per directory removed
+(`logs/task-5-review-scratch-at-commit.log`,
+`logs/task-5-review-scratch-per-directory-removed.log`). In all three the
+joined member stays at raw 5's old path, where no file is (O582), so it
+stays a stray, and the hold recurs in every later job until that member
+goes: the next job, over the English directory, held Zz 1 beside a Zz 2 at
+raw 5's page count, which a pass writes with per directory removed
+(`logs/task-5-review-scratch-next-job-at-commit.log`,
+`logs/task-5-review-scratch-next-job-per-directory-removed.log`).
+
+Before the change the three frozen-read tests, O336's and the two
+per-directory tests failed, and the guard passed. Put wrong by hand, on the
+final code:
+
+- per directory removed: the two per-directory tests;
+- the frozen read's change removed: the three frozen-read tests, O336's and
+  the frozen-duplicate test;
+- the change kept only for bytes a row reads by its held reading: O336's
+  alone;
+- the held arm skipping a row whose bytes another row holds, a recon's
+  candidate: the guard, at its one-directory case, and the first frozen-read
+  test;
+- `at_home` inverted: the three frozen-read tests, O336's, the guard and
+  `a_volume_a_pass_writes_beside_a_joined_volume_moved_out_of_a_frozen_directory_ends_as_written`,
+  among others of `derive::`'s
+  (`logs/task-5-review-mutation-at-home-inverted.log`);
+- the chapter-only rows taken into the bytes read at home, and the
+  chapter-only rows set aside with the other rows of those bytes: the
+  rules-save test alone, each
+  (`logs/fix-4-mutation-housed-takes-chapter-only.log`,
+  `logs/fix-4-mutation-retain-drops-chapter-only.log`);
+- `m.root_id` for `r.id` in the exemption: nothing, an equivalent mutant,
+  since asking per directory makes them one value; before it, that
+  mutation failed the frozen-duplicate test as first built, which wrote
+  raw 4 early.
+
+Not put wrong: the unary `+` before `m2.root_id`, which changes the query
+plan and not the answer (without it SQLite reads the stray member's
+directory through `member_by_root` for each matched member). Put wrong by
+the task's review and failing no test: the home set read without a copy's
+`member_root` row, equivalent since no row of another directory sits at a
+copy's member path, and a home keyed by path alone, where the review found
+no reachable difference
+(`logs/task-5-review-mutation-homes-without-member-root.log`,
+`logs/task-5-review-mutation-home-by-path-alone.log`).
+
+After Raw2's pressed Scan in the frozen-duplicate layout, raw 4 goes back
+to "Oshinoko": the Scan reads both Raw2 files again, they are two members,
+and the join takes no part. That is O582, whose cause a recon traced,
+without the frozen read, to the joined member kept at its old path, where no
+file is, through Raw2's Scan.
+
+**The minors the scan-fill PR deferred.**
+
+- `an_entry_a_pass_waits_on_names_its_directory_under_its_own_root_alone`
+  calls `named_directories` with waiting sets made by hand, and
+  `a_pass_writes_a_volume_beside_a_file_whose_path_waits_under_another_root`
+  reaches one root's case through a job. The filter comparing `rel_path`
+  alone fails both; `grouped` keying each waiting entry under every root
+  fails the job's test alone; an entry named where its own root or a lower
+  one waits on its path fails the direct call's second case alone.
+- The chapter-file, chapter's-folder and tail tests each compare the
+  volume's work at the job's end with the work the pass wrote. A pair stored
+  after the pass, so the full derive joins and the directory follows, fails
+  each chapter test there, in a fixture with an English volume 6 added; the
+  tail test fails it with Inner in Manga's library and keyed as raws, Manga
+  as the official English
+  (`logs/task-3-review-tail-pair-inner-raw-manga-official-one-library.log`).
+
+**What the recons left.**
+
+- O580. With the raws' directory removed by `scan::remove_root` and added
+  again with a new raw 4 beside raw 5, a pass wrote raw 4 in "Oshinoko" and
+  the job ended with it in "Oshi": on main and under Q
+  (`logs/f2-run2-main.log`, `logs/f2-run2-AQ.log`).
+- A matched member with no root, moved as in the third layout, is left open
+  by `present`'s held-reading arm. A review tried six layouts to reach it
+  without a hand write, and in each a member with a root answered for the
+  bytes; it was reached only by a hand write to the store.
+- The moved-file recon did not enumerate a file replaced at the old size and
+  time, which the walk reads as unchanged, or match rows written while a job
+  runs, and did not run a moved file landing in a paused directory, a
+  standing duplicate changed in the walk that moves the joined file, a copy
+  in another root becoming the primary, chains of three moves or more, a
+  member of an edition of several files, or more than one later job a
+  layout. Every stray is matched by `member.pages`, so a moved file whose
+  new row counts otherwise than its member is passed over, as for O450.
+
+**What the whole-branch review left.**
+
+- O584. A first import, with no pause and no stored match, of
+  `Alpha/Alpha v01.cbz` and a byte copy of it, `Beta/Beta v01.cbz`, under
+  one directory: a pass wrote a work in "Alpha" holding Alpha's file, and
+  the job ended with that work in "Beta" holding Beta's file and no work
+  holding Alpha's path (`logs/wbr-1-scratch-first-import-works.log`). With
+  the frozen read's change taken out and the stray statement as on main, the
+  job still ended with no work holding Alpha's path
+  (`logs/wbr-1-scratch-first-import-through-main-equivalent.log`).
+  Cancelled once Beta's file was hashed and then paused, the work held
+  Alpha's file while paused on the branch and Beta's in that second form
+  (the same two logs).

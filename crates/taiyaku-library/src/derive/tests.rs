@@ -11700,6 +11700,162 @@ fn a_paused_directory_reads_no_held_reading_its_works_no_longer_hold() {
     assert_eq!(standing(&conn), before, "c002 makes no member");
 }
 
+/// O336: bytes a paused directory reads at a member's path pass there alone,
+/// so a file added there and hashed before the cancel, byte for byte that
+/// member, waits for the Scan as every other new file does, and joins then.
+/// Read as it is, it would join the work while the pause stands.
+#[test]
+fn a_copy_added_to_a_paused_directory_and_hashed_before_the_cancel_waits_for_the_scan() {
+    let tree = crate::tests::tempdir("frozen-new-copy");
+    let (foo, spare) = ("Foo/Foo v01.cbz", "Spare/Foo v01.cbz");
+    write_archive(&tree.path().join(foo), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    let before = standing(&conn);
+    std::fs::create_dir_all(tree.path().join("Spare")).expect("mkdir");
+    std::fs::copy(tree.path().join(foo), tree.path().join(spare)).expect("copies Foo");
+    scan::scan_root(&conn, &r).expect("walks the copy");
+    let cancel = Recording::cancelling(|(step, _, _)| step == Step::Writing);
+    derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &cancel).expect("derives");
+    assert!(
+        digest_at(&conn, r.id, spare).is_some_and(|copy| Some(copy) == digest_at(&conn, r.id, foo)),
+        "the fixture: the cancelled derive hashed the copy as Foo's bytes"
+    );
+    pause(&conn, &r);
+
+    derive::derive(&conn).expect("derives");
+    let paused = standing(&conn);
+    scan::unpause(&conn, std::slice::from_ref(&r)).expect("Scan is pressed");
+    scan::scan_root(&conn, &r).expect("walks R again");
+    derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        (paused, member_paths(&conn)),
+        (
+            before,
+            [foo, spare]
+                .map(|at| tree.path().join(at).to_string_lossy().into_owned())
+                .to_vec()
+        ),
+        "the copy waits while paused, and joins once Scan is pressed"
+    );
+}
+
+/// A file changed under a pause keeps each copy of its bytes on its work. The
+/// paused directory reads the changed file by its held reading at its member's
+/// path; a copy under the same directory, at a member's path of its own, by
+/// its digest; and a copy under a second directory, unpaused, as it is.
+/// Skipping a held reading whose bytes another row holds as its digest, in the
+/// directory or anywhere, would leave the changed file waiting while paused.
+#[test]
+fn a_paused_directory_keeps_each_copy_of_a_file_changed_under_the_pause() {
+    for apart in [false, true] {
+        let (first, second) = crate::tests::a_copy_of("Foo v01.cbz");
+        let foo = "Foo/Foo v01.cbz";
+        let library = Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        let r = scanned_root(&conn, first.path(), None);
+        if apart {
+            scanned_root(&conn, second.path(), None);
+        } else {
+            std::fs::create_dir_all(first.path().join("Spare")).expect("mkdir");
+            std::fs::copy(
+                second.path().join(foo),
+                first.path().join("Spare/Foo v01.cbz"),
+            )
+            .expect("copies Foo");
+            scan::scan_root(&conn, &r).expect("walks the copy");
+        }
+        derive::derive(&conn).expect("derives");
+        let before = standing(&conn);
+        let at = |rel_path: &str| first.path().join(rel_path).to_string_lossy().into_owned();
+        assert_eq!(
+            (member_paths(&conn), before.member_roots.len()),
+            (
+                if apart {
+                    vec![at(foo)]
+                } else {
+                    vec![at(foo), at("Spare/Foo v01.cbz")]
+                },
+                2
+            ),
+            "the fixture: two members under one directory, or the first directory's file the \
+             member and both directories holding it"
+        );
+        write_archive(&first.path().join(foo), 4);
+        scan::scan_root(&conn, &r).expect("walks the change");
+        pause(&conn, &r);
+
+        derive::derive(&conn).expect("derives");
+
+        assert_eq!(standing(&conn), before, "apart: {apart}");
+    }
+}
+
+/// A rules save under a pause can make a file a chapter beside a byte twin
+/// that stays a volume. A chapter-only row makes no member, so it is no second
+/// reading of a volume and passes as it is: Foo's twin, made a chapter beside
+/// Foo's member, is counted, not set aside until the Scan. Nor does it house
+/// its bytes: Bar's member, made a chapter, leaves Bar's twin to pass, not to
+/// wait while the work keeps a member at a chapter's path.
+#[test]
+fn a_rules_save_under_a_pause_reads_the_chapters_it_makes_as_they_are() {
+    let tree = crate::tests::tempdir("frozen-rules-save");
+    let (foo, foo_twin) = ("Foo/Foo - v01.cbz", "Foo/Foo - v01 - c001.cbz");
+    let (bar, bar_twin) = ("Bar/Bar - v01 - c001.cbz", "Bar/Bar - v01.cbz");
+    write_archive(&tree.path().join(foo), 3);
+    write_archive(&tree.path().join(bar), 4);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    for (from, to) in [(foo, foo_twin), (bar, bar_twin)] {
+        std::fs::copy(tree.path().join(from), tree.path().join(to)).expect("copies a twin");
+    }
+    scan::scan_root(&conn, &r).expect("walks the twins");
+    let cancel = Recording::cancelling(|(step, _, _)| step == Step::Writing);
+    derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &cancel).expect("derives");
+    pause(&conn, &r);
+    let volumes: i64 = conn
+        .query_row(
+            "SELECT id FROM rule WHERE kind = 'builtin-volume'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the seeded volume rule");
+    let off = crate::rules::RulePatch {
+        enabled: Some(false),
+        ..Default::default()
+    };
+    crate::rules::update(&conn, volumes, &off).expect("saves the rules");
+    let (engine, _) = crate::rules::Engine::load(&conn).expect("loads the rules");
+    let chapter = |rel_path: &str| derive::chapter_only(&engine.resolve(&r, rel_path));
+    assert_eq!(
+        (
+            [foo, foo_twin, bar, bar_twin].map(chapter),
+            [(foo, foo_twin), (bar, bar_twin)].map(|(file, twin)| {
+                digest_at(&conn, r.id, twin)
+                    .is_some_and(|d| Some(d) == digest_at(&conn, r.id, file))
+            }),
+            member_paths(&conn).len()
+        ),
+        ([false, true, true, false], [true, true], 2),
+        "the fixture: each twin hashed before the cancel, joined to no work, and the save \
+         makes Foo's twin and Bar's member chapters"
+    );
+
+    let report = derive::derive(&conn).expect("derives");
+
+    let at = |rel_path: &str| tree.path().join(rel_path).to_string_lossy().into_owned();
+    assert_eq!(
+        (member_paths(&conn), report.unattached_chapter_dirs),
+        (vec![at(bar_twin), at(foo)], 2),
+        "Bar's twin holds its bytes, and both chapters are counted"
+    );
+}
+
 // --- A nested directory takes over the outer rows' readings (O320) -----------
 
 /// The reading `root_id`'s row at `rel_path` holds now, as `(sha256, format,

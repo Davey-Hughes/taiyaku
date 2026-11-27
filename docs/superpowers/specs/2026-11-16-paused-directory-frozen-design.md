@@ -433,10 +433,21 @@ first two before approving the plan.
    hashing) keeps it; where its work was not rewritten, that is harmless,
    since it still equals what the works hold. Goal 5 and §9's "no entry
    of R keeps a held reading" hold for every other entry, not for these.
+   *Note, 2026-11-25: not once the member has moved from that path. A
+   later Cancel then read the moved file's bytes at both paths, until
+   O336 closed, and still does where the directory holds them only as a
+   copy (O583); the reading a pressed Scan keeps there is O581
+   (`docs/status.md`).*
 4. **A byte-identical file added to a paused directory and hashed
    before the cancel passes the freeze** (its bytes are held under that
    root) and joins the work until Scan: a visible addition, nothing
    lost. Accepted and filed as O336.
+   *Note, 2026-11-25: O336 is closed where the paused directory holds a
+   member of the bytes at a path of its own. Bytes it reads at a member's
+   path pass there alone, so such a file waits for the Scan while the
+   file it copies stands. Where it holds them only as a copy, its
+   member's path in another directory, such a file still joins the work
+   before Scan is pressed (O583).*
 5. **Migration 027 fills in the held reading, once.** For every entry
    whose path a member names, through a directory of that member, and
    whose digest is NULL or differs from that member's, it holds the

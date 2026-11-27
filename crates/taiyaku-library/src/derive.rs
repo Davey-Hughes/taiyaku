@@ -1123,6 +1123,7 @@ fn grouped(
             if mode == Mode::Early && hashes(&admitted) {
                 waiting.keys.insert(own_key_of(&admitted));
                 waiting.entries.insert((root.id, admitted.entry.rel_path));
+                waiting.frozen.clone_from(frozen);
                 continue;
             }
             classify(
@@ -1174,6 +1175,9 @@ struct Waiting {
     keys: BTreeSet<GroupKey>,
     /// Each as its root's id and `rel_path`.
     entries: HashSet<(i64, String)>,
+    /// The roots the job reads frozen, for rule 3, which asks about them only
+    /// beside an entry here: empty where none waits.
+    frozen: HashSet<i64>,
 }
 
 /// Every root's entries as derivation reads them: each admitted, any that
@@ -1515,12 +1519,12 @@ fn entries(conn: &Connection, root_id: i64) -> Result<Vec<Entry>, String> {
 
 /// Every `scan_entry` under a paused root, in path order, so a derive hashes
 /// none of it and reads each held file by the reading its works hold (O320).
-/// Held is each digest of a member whose `member_root` names the root, a
-/// copy's too. A chapter-only entry passes as it is; else one whose held
-/// reading is held, read by it; else one whose digest is; else one of no
-/// pages. Any other entry waits, with the chapter-only entries it claims. Its
-/// works can still change: by a folder the walk could not list whole, a rules
-/// save, or another directory's file joining one (spec §7, §8).
+/// Held is each digest of a member whose `member_root` names the root, a copy's
+/// too. A chapter-only entry passes as it is; else one whose held reading is
+/// held, read by it; else one whose digest is; else one of no pages. Bytes that
+/// pass at a member's path pass there alone (O336). Any other entry waits, with
+/// the chapter-only entries it claims. Its works can still change by a short
+/// walk, a rules save, or another directory's file joining one (spec §7, §8).
 fn frozen_entries(conn: &Connection, engine: &Engine, root: &Root) -> Result<Vec<Entry>, String> {
     type Row = (
         Entry,
@@ -1577,6 +1581,43 @@ fn frozen_entries(conn: &Connection, engine: &Engine, root: &Root) -> Result<Vec
         }
         kept.push(entry);
     }
+    // Two rows of one digest under one directory make two members, so a file
+    // moved and hashed before the pause would be read twice: by its held
+    // reading at its old path and by its digest at the new one, as a duplicate
+    // or a new volume until the Scan. Read only where a member of its bytes
+    // sits, it stands where its works last held it, and a copy hashed before
+    // the cancel waits for the Scan as a new file does (O336). A copy passes
+    // at a member's path of its own, or where no member of its bytes sits.
+    let homes: HashSet<(String, String)> = conn
+        .prepare(
+            "SELECT m.path, m.sha256 FROM member m JOIN member_root mr ON mr.member_id = m.id
+              WHERE mr.root_id = ?1",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([root.id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })
+        .map_err(failed)?;
+    // Joined as `classify` joins a candidate's path.
+    let at_home = |entry: &Entry| {
+        entry.sha256.as_ref().is_some_and(|sha256| {
+            let path = root.path.join(&entry.rel_path);
+            homes.contains(&(path.to_string_lossy().into_owned(), sha256.clone()))
+        })
+    };
+    let housed: HashSet<String> = kept
+        .iter()
+        .filter(|entry| !chapters.contains(&entry.rel_path) && at_home(entry))
+        .filter_map(|entry| entry.sha256.clone())
+        .collect();
+    kept.retain(|entry| {
+        chapters.contains(&entry.rel_path)
+            || entry
+                .sha256
+                .as_ref()
+                .is_none_or(|sha256| !housed.contains(sha256))
+            || at_home(entry)
+    });
     // What waits is what the rows claim as the walk saved them, less what
     // passed: a new folder volume, say. A chapter-only entry passed beneath it
     // would stand under no claim, counted unattached and naming a series no
