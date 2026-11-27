@@ -103,7 +103,9 @@ pub struct FeedMarks {
     /// ends, and as `cli_watch` sees another process's writes (a scan, or any
     /// write that moves the store's structure version) or this server's own
     /// outside a job: the feed's `ended`, so a page that polls between two
-    /// readings learns that one ended although it never saw it run.
+    /// readings learns that one ended although it never saw it run. Each
+    /// raise comes after a refresh of a live registry (O585, O587), so a page
+    /// that reads again then is served the writes that refresh could read.
     pub ended: std::sync::atomic::AtomicU64,
     /// Raised as a scan job's early passes write volumes (O314): the feed's
     /// `written`, so an open Library view reads its grid again while the job

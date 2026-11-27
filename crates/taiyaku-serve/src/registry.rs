@@ -418,6 +418,38 @@ async fn tick(
     }
 }
 
+/// Read `state`'s works again where the library has moved, on the calling
+/// thread, before one of this server's own jobs says it has written: a scan
+/// job before its slots take their reports and it ends
+/// ([`crate::scan_jobs::spawn_job`]), and the match pass before its derive
+/// moves the feed's `ended`. A page that reads again at that sign is then
+/// served what the job wrote (O587), as [`tick`] refreshes before it raises.
+/// **Blocks**, and never panics: the caller still has a job to end, and its
+/// sign goes ahead after a refresh that fails or panics, as a tick's raise does.
+pub(crate) fn refresh_before_a_job_says_it_wrote(state: &crate::ServeState) {
+    refresh_caught(state, |state| {
+        // The refresh reports itself, in its own order (`Works::refresh`).
+        let _ = state.works.refresh_if_moved(&state.library);
+    });
+}
+
+/// Run `refresh` over `state`, printing a panic rather than passing it on:
+/// [`refresh_before_a_job_says_it_wrote`]'s body, with the refresh given so
+/// a test can hand it one that panics.
+fn refresh_caught(state: &crate::ServeState, refresh: impl FnOnce(&crate::ServeState)) {
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| refresh(state)));
+    if let Err(panicked) = caught {
+        // Not `eprintln!`, which panics when nothing reads stderr.
+        let _ = writeln!(
+            std::io::stderr(),
+            "taiyaku: a refresh before a job says it has written panicked: {}",
+            crate::scan_jobs::panic_text(panicked.as_ref())
+                .as_deref()
+                .unwrap_or("its payload names no message")
+        );
+    }
+}
+
 /// Print a panic on one of the refresher's blocking tasks to stderr.
 fn print_panic(panicked: &tokio::task::JoinError) {
     // Not `eprintln!`, which panics when nothing reads stderr, and a panic

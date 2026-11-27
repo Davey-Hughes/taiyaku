@@ -33779,3 +33779,89 @@ for each mention is haiyaku API work (O543).
   are haiyaku's, filed in haiyaku's own repository as its O26 to O30. The
   prototype's links match haiyaku's acceptance run after that run's
   `Refusal::Related` fix: 114 in English and 88 in Korean (haiyaku's O31).
+
+## O587: the server's own job ends refresh first (2026-11-25)
+
+The row in `docs/status.md` says what changed. Each mutation below was put in
+by hand, run against the tests named, and taken out, and no mutation sweep ran
+for the branch.
+
+**The tests.** No refresher runs in either, so the job's own refresh is the
+only one that can serve its writes.
+
+`scan_jobs::tests`' `a_scan_job_says_it_has_ended_once_the_registry_holds_what_it_wrote`
+reserves a directory of a live library and runs a scan job over it whose body
+retitles the library's one work. A second thread, started before the job,
+spins until the first sign a page reads a job's end by: the directory's slot
+done, the job ended, or the feed's `ended` moved. It reads the work's title
+from the registry at that sign. With the job's refresh taken out, which leaves
+the job's end as on `main`, it failed:
+
+```
+assertion `left == right` failed: a page that read again at the job's end was served the work as it was
+  left: Some("Scanned - v01")
+ right: Some("Retitled")
+```
+
+`match_pass::tests`' `the_pass_derive_moves_ended_once_the_registry_holds_the_join`
+builds a live registry over the store of
+`a_pair_the_pass_stores_at_the_bar_joins_at_its_derive`, an English volume and
+its raw, each a work of its own, whose fixture now builds through
+`an_english_volume_and_its_raw`. A second thread spins until `ended` moves and
+reads which editions the registry serves for the English volume's work, while
+the pass stores the pair at the bar and derives. With the derive's refresh
+taken out, which leaves the derive as on `main`, it failed:
+
+```
+assertion `left == right` failed: a page that read again as the derive moved `ended` was served the work without the raw
+  left: ["en"]
+ right: ["en", "ja"]
+```
+
+`registry::tests`' `a_refresh_before_a_jobs_end_that_panics_goes_no_further`
+hands `refresh_caught` a refresh that panics and asserts that it returns. It
+runs no job, so it does not see a job end after such a panic, and a
+`refresh_before_a_job_says_it_wrote` rewritten to call the refresh without
+`refresh_caught` would pass all three tests; no test makes the real refresh
+panic.
+
+**Mutations.** Put wrong by hand in the code as built, each failed the test
+named:
+
+- the scan job's refresh taken out: the scan test, `Scanned - v01` against
+  `Retitled`;
+- the scan job's refresh moved after `reserved.end`: the scan test, the same;
+- the scan job's refresh moved between the directories' reports and
+  `reserved.end`: the scan test, since a page reads a directory's report as
+  an end too;
+- the derive's refresh taken out: the match test, `["en"]` against
+  `["en", "ja"]`;
+- the derive's refresh moved after the raise: the match test, the same;
+- `refresh_caught` running the refresh with no `catch_unwind`: the panic
+  test, at the refresh's own panic.
+
+With the code restored, the three tests passed together in each of five runs.
+A refresh moved after a sign races the watching thread: the test passes where
+the thread reads after the late refresh, so such a mutation is not certain to
+fail. The fixed order, the refresh before every sign, always passes.
+
+**What it costs.** A scan job's refresh runs on its blocking task before its
+end, so its directories show as running, and the job stays in the feed, for
+as long as the read of every work takes when the library moved. A cancel of
+the scan job pressed then is answered as accepted, and the job still ends
+finished, as the cancel route says of a job that ends after its read; having
+ended finished, it then starts the fingerprint pass
+(`fingerprint_pass::kick`), as a scan that ran to its end does. The match
+pass's refresh runs on the thread that runs its derive, before the derive's
+raise, while the pass waits on it. Ends close together each pay that read in
+turn, on the registry's refresh lock, where one tick's read served them all;
+a tick that follows finds nothing moved.
+
+**What was not run.** No browser saw the window, before or after: it was found
+by a reading. By that reading it shows as a grid cover that stays a
+placeholder for a new edition of a held work, whose thumb route answers 404
+until the next refresh, and as a reader opened in the window serving the work
+as it was. The fingerprint pass's writes were checked by reading, not by a
+run: `scan_entry`'s digests and the prints, neither among the tables the
+structure version's triggers watch (`014_structure_version.sql`), which are
+those a work is projected from.

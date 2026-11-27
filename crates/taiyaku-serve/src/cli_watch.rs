@@ -22,7 +22,9 @@
 //! that reads again after the raise is served at least what the look saw. A
 //! write that lands after the read is the next tick's to raise, by
 //! [`CliWatch::decide`]'s rules, and that tick's refresh reads it before that
-//! raise.
+//! raise. This server's own raises refresh first too: a scan job's end and the
+//! match pass's derive read the works again before `ended` moves
+//! ([`crate::registry::refresh_before_a_job_says_it_wrote`], O587).
 //!
 //! **Re-read only.** Nothing is drawn while the other process runs: it is no
 //! job of this server's, so the feed lists nothing for it, and a page only

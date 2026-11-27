@@ -882,13 +882,10 @@ fn holders(conn: &Connection, digest: &str) -> Vec<i64> {
     .unwrap_or_else(|e| panic!("the works holding {digest}: {e}"))
 }
 
-/// An English volume and its raw, scanned from directories of library
-/// `Manga`, which matches by content, each in a series of its own, carry A's
-/// and B's prints (V 0.95): the pass stores their pair at the bar, and its own
-/// derive puts the raw on the English volume's work, joined by that pair.
-#[test]
-fn a_pair_the_pass_stores_at_the_bar_joins_at_its_derive() {
-    let fixture = Fixture::new("match-pass-joins");
+/// [`a_pair_the_pass_stores_at_the_bar_joins_at_its_derive`]'s store: an
+/// English volume and its raw, each a work of its own, carrying A's and B's
+/// prints. Answers the store and the two files' digests, English first.
+fn an_english_volume_and_its_raw(fixture: &Fixture) -> (Arc<Library>, String, String) {
     let [a, b, ..] = four();
     let library = test_support::library();
     let (en, ja) = {
@@ -929,6 +926,17 @@ fn a_pair_the_pass_stores_at_the_bar_joins_at_its_derive() {
         plant_prints(&conn, &digests[1], &b.pages);
         (digests[0].clone(), digests[1].clone())
     };
+    (library, en, ja)
+}
+
+/// An English volume and its raw, scanned from directories of library
+/// `Manga`, which matches by content, each in a series of its own, carry A's
+/// and B's prints (V 0.95): the pass stores their pair at the bar, and its own
+/// derive puts the raw on the English volume's work, joined by that pair.
+#[test]
+fn a_pair_the_pass_stores_at_the_bar_joins_at_its_derive() {
+    let fixture = Fixture::new("match-pass-joins");
+    let (library, en, ja) = an_english_volume_and_its_raw(&fixture);
     let apart = {
         let conn = library.conn();
         (holders(&conn, &en), holders(&conn, &ja))
@@ -965,6 +973,68 @@ fn a_pair_the_pass_stores_at_the_bar_joins_at_its_derive() {
         [("en".to_owned(), None), ("ja".to_owned(), Some(id))],
         "the raw is an edition of it, joined by the pair"
     );
+}
+
+/// O587: the pass's derive moves `ended` only once the registry holds what it
+/// wrote, so a page that reads again then is served the English volume's work
+/// with the raw joined to it. No refresher runs here, so the derive's own
+/// refresh is the only one that can serve the join; the watcher reads the
+/// registry as soon as `ended` moves, so a refresh that comes before it is
+/// always in what the watcher reads.
+#[test]
+fn the_pass_derive_moves_ended_once_the_registry_holds_the_join() {
+    let fixture = Fixture::new("match-pass-refreshes");
+    let (library, en, _) = an_english_volume_and_its_raw(&fixture);
+    let host: String = {
+        let conn = library.conn();
+        let id = holders(&conn, &en)[0];
+        conn.query_row("SELECT slug FROM work WHERE id = ?1", [id], |r| r.get(0))
+            .expect("the English volume's slug")
+    };
+    let state = Arc::new(ServeState {
+        library: Arc::clone(&library),
+        works: crate::Works::library(&library).expect("projects the works"),
+        matches: Arc::new(Pass::with(polling())),
+        ..test_support::state(&fixture)
+    });
+    assert_eq!(
+        served_editions(&state, &host),
+        ["en"],
+        "the fixture: the registry holds the English volume alone"
+    );
+    let before = ended(&state);
+    let (watching, watched) = (Arc::clone(&state), host.clone());
+    let served = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + SETTLE;
+        loop {
+            if ended(&watching) != before {
+                return served_editions(&watching, &watched);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the pass's derive never moved `ended`"
+            );
+            std::hint::spin_loop();
+        }
+    });
+
+    kicked(&state);
+
+    assert_eq!(
+        served.join().expect("the watcher ends"),
+        ["en", "ja"],
+        "a page that read again as the derive moved `ended` was served the work without the raw"
+    );
+}
+
+/// The keys of the editions `state`'s registry serves for `slug`, none where
+/// it holds no such work.
+fn served_editions(state: &ServeState, slug: &str) -> Vec<String> {
+    state
+        .works
+        .get(slug)
+        .map(|work| work.sidecar().editions.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// The line the pass says after its derive names each count of the report

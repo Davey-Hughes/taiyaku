@@ -838,6 +838,20 @@ async fn a_tick_whose_refresh_panics_still_looks_with_the_watch_it_kept() {
     );
 }
 
+/// A refresh before a job's end that panics is printed and goes no further:
+/// `refresh_caught` returns, so the job that called it goes on to end. It calls
+/// the helper's body, not a job, so it does not see the job end.
+#[test]
+fn a_refresh_before_a_jobs_end_that_panics_goes_no_further() {
+    let (_router, state, _fixture) = crate::test_support::router_over_a_live_library();
+    let (ran, refreshed) = mpsc::channel();
+    super::refresh_caught(&state, move |_| {
+        ran.send(()).expect("the test is listening");
+        panic!("a refresh that panics");
+    });
+    refreshed.try_recv().expect("the refresh ran");
+}
+
 /// A tick's refresh starts after its look's read and before its raise, so the
 /// tick never raises `ended` for a write its refresh was not asked to read. The
 /// refresh here records whether `ended` had moved when it ran, then writes a

@@ -970,11 +970,17 @@ pub(crate) fn status_sent(
 
 /// What a caught panic said, or that it said nothing readable.
 pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    panic_text(payload)
+        .unwrap_or_else(|| "the scan panicked with a payload that names no message".to_string())
+}
+
+/// What a caught panic said, where it said it as a string: none for any other
+/// payload, which each caller words for what panicked.
+pub(crate) fn panic_text(payload: &(dyn std::any::Any + Send)) -> Option<String> {
     payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_string())
         .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "the scan panicked with a payload that names no message".to_string())
 }
 
 /// What each of `count` directories' registry entry then holds: `outcome`'s
@@ -1156,9 +1162,10 @@ pub(crate) fn spawn(
 }
 
 /// [`spawn`] with the job given: run `job` on the blocking pool over the
-/// [`Job`] reserved at `started`, and when it ends, however it ends, mark
-/// every one of `roots` done with its report, or with an error where the job
-/// answered none for it; then mark the [`Job`] ended.
+/// [`Job`] reserved at `started`, and when it ends, however it ends, read the
+/// works again where the library moved (O587), mark every one of `roots` done
+/// with its report, or with an error where the job answered none for it; then
+/// mark the [`Job`] ended.
 ///
 /// A reservation is identified by its `started`: an entry that another scan
 /// started, or that a removal cleared, is left as it is.
@@ -1186,6 +1193,9 @@ where
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             job(&state, &roots, &running)
         }));
+        // Before the slots take their reports and the job its end, each a sign
+        // a page reads again at, so the page is served what the job wrote.
+        crate::registry::refresh_before_a_job_says_it_wrote(&state);
         let mut reports = reports_of(roots.len(), outcome).into_iter();
         {
             let mut scans = locked(&state.scans);

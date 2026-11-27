@@ -583,8 +583,8 @@ fn pairs(count: usize) -> &'static str {
 /// works from a store the other is rewriting. Each wait reads `job`'s cancel
 /// between tries, so a cancel during either ends the job with no derive, and
 /// the pairs wait for the next. A cancel during the derive is read once it
-/// has ended. The feed's `ended` moves after it, so an open Library view reads
-/// the works it joined.
+/// has ended. The registry reads the works again, then the feed's `ended`
+/// moves, so a page that reads again is served the works it joined (O587).
 fn derive_after(state: &ServeState, job: &Job, at_bar: usize) {
     let Some(settings) = &state.matches.settings else {
         return;
@@ -592,6 +592,7 @@ fn derive_after(state: &ServeState, job: &Job, at_bar: usize) {
     let Some(derived) = derived(state, settings.poll, job) else {
         return;
     };
+    crate::registry::refresh_before_a_job_says_it_wrote(state);
     state.jobs_ended.ended.fetch_add(1, Ordering::SeqCst);
     settings.derived();
     say(&derived_line(at_bar, &derived));

@@ -2744,3 +2744,87 @@ async fn a_first_scan_of_an_off_directory_cut_in_its_walk_is_taken_up_as_one_job
         "(what the start runs, the works, a's word, whether a is held)"
     );
 }
+
+/// O587: once a page can tell that a scan job has ended, by its slots'
+/// reports, by its leaving the feed or by the feed's `ended`, the registry
+/// serves the work as the job left it. No refresher runs here, so the job's
+/// own refresh is the only one that can serve the change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scan_job_says_it_has_ended_once_the_registry_holds_what_it_wrote() {
+    let (_router, state, _fixture) = test_support::router_over_a_live_library();
+    let slug = state.works.snapshot()[0].id.clone();
+    let root = scan::roots(&state.library.conn())
+        .expect("the directories")
+        .remove(0);
+    let started = std::time::Instant::now();
+    let job =
+        super::reserve(&state, std::slice::from_ref(&root), started, None).expect("reserves it");
+    let served = title_served_at_the_end(&state, &job, &root, &slug);
+
+    let retitling = slug.clone();
+    super::spawn_job(
+        std::sync::Arc::clone(&state),
+        vec![root],
+        started,
+        move |state, roots, _| {
+            let retitled = state
+                .library
+                .conn()
+                .execute(
+                    "UPDATE work SET title = 'Retitled' WHERE slug = ?1",
+                    [&retitling],
+                )
+                .expect("retitles the work");
+            assert_eq!(retitled, 1, "the fixture's one work");
+            Ok(roots.iter().map(|_| json!({})).collect())
+        },
+    )
+    .await
+    .expect("the job ends");
+
+    assert_eq!(
+        served.join().expect("the watcher ends").as_deref(),
+        Some("Retitled"),
+        "a page that read again at the job's end was served the work as it was"
+    );
+}
+
+/// `slug`'s title as `state`'s registry serves it at the first sign a page
+/// reads `job`'s end by: `root`'s slot done, the job ended, or the feed's
+/// `ended` moved. Read as the sign is seen, by a thread that only looks, so
+/// a refresh that comes before every sign is always in what it answers; one
+/// that comes after a sign is in it only where the thread reads after it.
+fn title_served_at_the_end(
+    state: &std::sync::Arc<crate::ServeState>,
+    job: &std::sync::Arc<super::Job>,
+    root: &scan::Root,
+    slug: &str,
+) -> std::thread::JoinHandle<Option<String>> {
+    use std::sync::atomic::Ordering;
+    let (state, job, root, slug) = (
+        std::sync::Arc::clone(state),
+        std::sync::Arc::clone(job),
+        root.clone(),
+        slug.to_owned(),
+    );
+    let before = state.jobs_ended.ended.load(Ordering::SeqCst);
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + test_support::SETTLE;
+        loop {
+            if state.jobs_ended.ended.load(Ordering::SeqCst) != before
+                || job.ended().is_some()
+                || slot(&state, &root).0
+            {
+                return state
+                    .works
+                    .get(&slug)
+                    .map(|work| work.sidecar().work.title.clone());
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the job never said it had ended"
+            );
+            std::hint::spin_loop();
+        }
+    })
+}
