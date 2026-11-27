@@ -364,6 +364,9 @@ fn document(
                     if let Some(link) = &f.link {
                         sent["link"] = linked(serde_json::json!({}), &link.to, link.note);
                     }
+                    if f.page {
+                        sent["page"] = true.into();
+                    }
                     Some(sent)
                 })
                 .collect();

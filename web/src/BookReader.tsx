@@ -54,6 +54,7 @@ import {
   entryAt,
   type Excerpt,
   type Figure,
+  isPageImage,
   excerpt,
   excerptsIn,
   firstSentences,
@@ -83,6 +84,8 @@ import {
   matchShows,
   movesAnchor,
   offScreen,
+  onPageLink,
+  onPicture,
   type Pages,
   pagesOf,
   pageTurnedBy,
@@ -164,6 +167,7 @@ import {
   contentsModule,
   TOGGLE_INTENT as CONTENTS_TOGGLE,
 } from './modules/contents'
+import { fitModule } from './modules/fit'
 import {
   enabledModules,
   helpModule,
@@ -479,6 +483,15 @@ export function BookReader({
   // Where the reader was before an in-book link took them on, for Back.
   const [back, setBack] = useState<Place>()
   const [prefs, setPrefs] = usePrefsMap(registry.all(), loadPrefs, savePrefs)
+  // Whether a page image, or a figure opened full size, may be drawn larger
+  // than its own size: the comic reader's upscale-to-fit, so a cover reads
+  // alike in either reader, and a small figure opens as large as the screen
+  // lets it be. Its control is in the comic reader's settings, not the
+  // book's, so it cannot change while a book is open: read once, as the comic
+  // reader reads it.
+  const [upscale] = useState(
+    () => loadPrefs(fitModule.id, fitModule.defaults).upscaleToFit,
+  )
   const text = useRef<HTMLDivElement>(null)
   const anchor = useRef<Anchor>({ block: 0, at: 0 })
   // The place last committed, which the anchor belongs to: `backTo`.
@@ -990,7 +1003,15 @@ export function BookReader({
         const resumed = saved && saved.edition in loaded.editions
         setBook(loaded)
         // A saved block past the end is one a shorter copy of the book, read
-        // again since, no longer has; its last block is the nearest.
+        // again since, no longer has; its last block is the nearest. A book
+        // opened afresh starts at its first figure where one is set before
+        // its first block, as a cover is: placed by that block, it would open
+        // on the block's own page or line, past the cover. A work with no
+        // book edition has no hub edition, and says so once it is drawn.
+        const leading =
+          loaded.editions[loaded.hub]?.figures?.filter(
+            (figure) => figure.before === 0,
+          ).length ?? 0
         const opening: Place = resumed
           ? {
               edition: saved.edition,
@@ -1003,7 +1024,11 @@ export function BookReader({
               ),
               saved: true,
             }
-          : { edition: loaded.hub, block: 0 }
+          : {
+              edition: loaded.hub,
+              block: 0,
+              figure: leading > 0 ? -leading : undefined,
+            }
         reopensAt.current = opening
         setPlace(opening)
       })
@@ -2018,6 +2043,7 @@ export function BookReader({
         data-paged={pagedPref || undefined}
         data-compared={comparing || undefined}
         data-vertical={vertical || undefined}
+        data-upscale={upscale || undefined}
         onScroll={() => {
           const host = text.current
           const placing = scrolledTo(host, placedAt.current)
@@ -2065,6 +2091,19 @@ export function BookReader({
             save({ edition: place.edition, block: resumeBlock(host) })
           }
         }}
+        onPointerMove={(event) => {
+          // A page image's link shows its pointer only where a press follows
+          // it: no stylesheet can tell its picture from the room `contain`
+          // leaves around it inside the image's own box.
+          const figure = (event.target as Element).closest('[data-page-image]')
+          if (!figure || !pagedPref || comparing) return
+          figure
+            .querySelector('a[data-link] img')
+            ?.toggleAttribute(
+              'data-follows',
+              onPageLink(text.current, figure, event.clientX, event.clientY),
+            )
+        }}
         onPointerDown={(event) => {
           setSelected(undefined)
           pressed.current = {
@@ -2091,13 +2130,38 @@ export function BookReader({
           }
           setFound((f) => (f?.drawn ? { match: f.match, drawn: false } : f))
           const target = event.target as Element
+          // A page image fills its page, so a tap on it is the page's, as it
+          // would be over words: its outer thirds turn the page, and its middle
+          // shows or hides the bars. It opens nothing, its page already sizing
+          // it as the comic reader sizes a page, and only its picture follows a
+          // link it is set in (`onPageLink`). Scrolled or compared, it is
+          // drawn as any figure is, and a tap on it is a figure's. A tap that
+          // is the page's takes its click, a mouse's too, which would
+          // otherwise follow a web link the image is set in as well.
+          const pageImage =
+            pagedPref && !comparing ? target.closest('[data-page-image]') : null
+          const pagesOwn =
+            pageImage !== null &&
+            !onPageLink(text.current, pageImage, event.clientX, event.clientY)
+          if (pagesOwn) {
+            // A mousedown after this, as a finger's is, or before it, as a
+            // mouse's is, would leave focus on that link, and Enter and Space
+            // with it: one after is held, and the focus one before gave the
+            // link is taken back. No other element's focus is taken here.
+            takeTapClick(event, { keepFocus: true, mouseToo: true })
+            const focused = document.activeElement
+            if (focused instanceof HTMLElement && pageImage.contains(focused)) {
+              focused.blur()
+            }
+          }
           // An image set in a link is the link's, below.
-          const tapped = target.closest('[data-link]')
-            ? undefined
-            : (target.closest<HTMLImageElement>('img.book-inline-image') ??
-              target
-                .closest('[data-figure]')
-                ?.querySelector<HTMLImageElement>('img'))
+          const tapped =
+            pagesOwn || target.closest('[data-link]')
+              ? undefined
+              : (target.closest<HTMLImageElement>('img.book-inline-image') ??
+                target
+                  .closest('[data-figure]')
+                  ?.querySelector<HTMLImageElement>('img'))
           if (tapped) {
             // Not the first of a double tap, which would peek on the next,
             // and an earlier tap's wait stopped, which would hide the bars
@@ -2120,7 +2184,9 @@ export function BookReader({
             takeTapClick(event)
             return
           }
-          const link = target.closest<HTMLElement>('[data-link]')
+          const link = pagesOwn
+            ? null
+            : target.closest<HTMLElement>('[data-link]')
           if (link) {
             // At once, and not the first of a double tap, so a second tap on
             // it neither peeks nor stops the first. A web link is the
@@ -2480,7 +2546,11 @@ export function BookReader({
         onAccount={() => setPanel('account')}
       />
       {figure && (
-        <FullFigure {...figure} onClose={() => setFigure(undefined)} />
+        <FullFigure
+          {...figure}
+          upscale={upscale}
+          onClose={() => setFigure(undefined)}
+        />
       )}
       {footnote && (
         <BookFootnote
@@ -2834,7 +2904,8 @@ const BookBlock = memo(function BookBlock({
  * over it to the blocks either side, and the reader's place, where the screen
  * starts in one, names it from the block after it (`Anchor.figure`). Tapped,
  * it opens full size (`data-figure`, in the text's `onPointerUp`), or follows
- * the link it is set in.
+ * the link it is set in; a page image, paged and not compared, opens nothing
+ * (`onPageLink`).
  */
 function Figures({
   figures,
@@ -2850,7 +2921,12 @@ function Figures({
       <img src={bookImageUrl(work, edition, figure.image)} alt={figure.alt} />
     )
     return (
-      <figure key={k} className="book-figure" data-figure>
+      <figure
+        key={k}
+        className="book-figure"
+        data-figure
+        data-page-image={isPageImage(figure) || undefined}
+      >
         {figure.link ? (
           <Linked
             link={figure.link}
@@ -2868,30 +2944,41 @@ function Figures({
 }
 
 /**
- * A figure tapped open, as large as the screen lets it be drawn. A modal
- * `<dialog>` outside the text, so no press on it reaches the text's taps;
- * Escape (the reader's key handler, or the browser's close request) or a tap
- * beside the image closes it.
+ * A figure tapped open, no larger than the screen lets it be drawn, and larger
+ * than its own size only while `upscale`, the comic reader's upscale-to-fit,
+ * is on. A modal `<dialog>` outside the text, so no press on it reaches the
+ * text's taps; Escape (the reader's key handler, or the browser's close
+ * request) or a tap beside the picture closes it, on the room `contain`
+ * leaves around it inside the image too.
  */
 function FullFigure({
   src,
   alt,
+  upscale,
   onClose,
 }: {
   src: string
   alt: string
+  upscale: boolean
   onClose: () => void
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   useLayoutEffect(() => {
     if (dialog.current?.open === false) dialog.current.showModal()
   }, [])
-  const backdrop = useBackdropClose(onClose)
+  const backdrop = useBackdropClose(
+    onClose,
+    (event) =>
+      event.target === event.currentTarget ||
+      (event.target instanceof HTMLImageElement &&
+        !onPicture(event.target, event.clientX, event.clientY)),
+  )
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the click is a tap beside the image; a keyboard closes it with Escape, the dialog's own cancel
     <dialog
       ref={dialog}
       className="book-figure-full"
+      data-upscale={upscale || undefined}
       aria-label={alt || 'An image from the book'}
       onCancel={(e) => {
         // Closed by its owner no longer drawing it, so the browser never

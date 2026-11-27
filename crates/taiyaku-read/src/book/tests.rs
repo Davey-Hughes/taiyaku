@@ -1263,6 +1263,15 @@ fn figure(before: usize, src: &str, alt: &str) -> Figure {
         src: src.to_string(),
         alt: alt.to_string(),
         link: None,
+        page: false,
+    }
+}
+
+/// [`figure`], the whole of its spine document.
+fn page(before: usize, src: &str, alt: &str) -> Figure {
+    Figure {
+        page: true,
+        ..figure(before, src, alt)
     }
 }
 
@@ -1370,7 +1379,40 @@ fn an_svg_image_is_read_by_its_xlink_href() {
         r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="cover.jpg"/></svg>"#,
     );
     assert!(book.blocks.is_empty());
-    assert_eq!(book.figures, [figure(0, "cover.jpg", "")]);
+    assert_eq!(book.figures, [page(0, "cover.jpg", "")]);
+}
+
+#[test]
+fn an_image_alone_in_its_document_is_a_page_and_one_beside_text_is_not() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<div><img src="cover.png" alt="Cover"/></div>"#,
+        r#"<p>Text.</p><img src="map.png" alt="Map"/><p>More.</p>"#,
+    );
+    let read: Vec<&str> = book.blocks.iter().map(|b| b.text.as_str()).collect();
+    assert_eq!(read, ["Text.", "More."]);
+    assert_eq!(
+        book.figures,
+        [page(0, "cover.png", "Cover"), figure(1, "map.png", "Map")]
+    );
+}
+
+#[test]
+fn two_images_alone_in_their_document_are_not_pages() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<div><img src="logo.png" alt="Logo"/><img src="title.png" alt="Title"/></div>"#,
+        r#"<p>Text.</p>"#,
+    );
+    assert_eq!(
+        book.figures,
+        [
+            figure(0, "logo.png", "Logo"),
+            figure(0, "title.png", "Title")
+        ]
+    );
 }
 
 #[test]

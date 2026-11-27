@@ -4,9 +4,10 @@ import { page, userEvent } from 'vitest/browser'
 import { BookReader } from '../src/BookReader'
 import { topOf } from '../src/bookPages'
 import '../src/index.css'
+import { paintedBox } from '../src/notes'
 import { CLICK_WAIT_MS } from '../src/tapClick'
 import { mount } from './support/mount'
-import { mouse } from './support/mouse'
+import { mouse, pen } from './support/mouse'
 import { pointerRulesAs } from './support/pointer'
 import { ringOf } from './support/ring'
 import { tapAt } from './support/touch'
@@ -14,15 +15,25 @@ import { tapAt } from './support/touch'
 vi.mock('../src/Account', () => ({ Account: () => null }))
 
 // Images the browser draws at a size of their own: a small one, so the
-// full-size figure leaves room beside it, and `PLATE`, as wide as the column
-// and taller than the screen.
+// full-size figure leaves room beside it, `PLATE`, as wide as the column
+// and taller than the screen, `COVER`, a wide picture smaller than a page,
+// so a page drawing it leaves room above and below it, and `TALL`, shaped
+// as a printed book's cover.
 vi.mock('../src/book', async (original) => ({
   ...(await original<typeof import('../src/book')>()),
   bookImageUrl: (_work: string, _edition: string, image: number) =>
-    image === PLATE ? svg(2000, 20000) : svg(120, 80),
+    image === PLATE
+      ? svg(2000, 20000)
+      : image === COVER
+        ? svg(200, 60)
+        : image === TALL
+          ? svg(683, 1024)
+          : svg(120, 80),
 }))
 
 const PLATE = 9
+const COVER = 8
+const TALL = 7
 
 function svg(width: number, height: number): string {
   return `data:image/svg+xml,${encodeURIComponent(
@@ -236,6 +247,12 @@ describe('a finger’s tap on the book’s text', () => {
   })
 
   it('keeps open the image its tap on a figure opened, and a tap beside the image closes it', async () => {
+    // Its own size, so the room beside it is the dialog's.
+    localStorage.setItem(
+      'taiyaku.prefs.fit',
+      JSON.stringify({ upscaleToFit: false }),
+    )
+    onTestFinished(() => localStorage.removeItem('taiyaku.prefs.fit'))
     const host = await reader()
     const full = () =>
       host.querySelector<HTMLDialogElement>('dialog.book-figure-full')
@@ -437,6 +454,471 @@ describe('a finger’s tap on the book’s text', () => {
     await settled()
     expect(topOf(text).block).toBe(6)
     expect(reached).toEqual([host.querySelector('.book-figure img')])
+  })
+})
+
+/** `book` with a cover before its first block, a page of its own. */
+const covered = {
+  ...book,
+  editions: {
+    en: {
+      ...book.editions.en,
+      figures: [{ before: 0, image: COVER, alt: 'the cover', page: true }],
+    },
+  },
+}
+
+/** `covered` with its cover set in a web link. */
+const linkedCovered = {
+  ...book,
+  editions: {
+    en: {
+      ...book.editions.en,
+      figures: [
+        {
+          before: 0,
+          image: COVER,
+          alt: 'the cover',
+          page: true,
+          link: { url: 'https://y.org/', note: false },
+        },
+      ],
+    },
+  },
+}
+
+/** `covered` with a printed book's cover, `TALL`, taller than it is wide. */
+const tallCovered = {
+  ...book,
+  editions: {
+    en: {
+      ...book.editions.en,
+      figures: [{ before: 0, image: TALL, alt: 'the cover', page: true }],
+    },
+  },
+}
+
+/** A paged layout, and upscale-to-fit as `upscaleToFit` says, for this case alone. */
+function pagedWith(upscaleToFit: boolean) {
+  localStorage.setItem(
+    'taiyaku.prefs.book-layout',
+    JSON.stringify({ mode: 'scroll', paged: true }),
+  )
+  localStorage.setItem('taiyaku.prefs.fit', JSON.stringify({ upscaleToFit }))
+  onTestFinished(() => {
+    localStorage.removeItem('taiyaku.prefs.book-layout')
+    localStorage.removeItem('taiyaku.prefs.fit')
+  })
+}
+
+/**
+ * The page image on `host`'s page: its figure and image, the page it fills,
+ * the picture its image draws, contained in it, and the page's middle third
+ * across, which a tap in neither turns back nor on.
+ */
+function coverOf(host: HTMLElement) {
+  const text = host.querySelector('.book-text') as HTMLElement
+  const figure = host.querySelector('[data-page-image]') as HTMLElement
+  const image = figure.querySelector('img') as HTMLImageElement
+  const box = image.getBoundingClientRect()
+  const art = paintedBox(
+    { w: image.naturalWidth, h: image.naturalHeight },
+    { w: box.width, h: box.height },
+  )
+  const across = text.getBoundingClientRect()
+  return {
+    figure,
+    image,
+    sheet: figure.getBoundingClientRect(),
+    picture: new DOMRect(box.left + art.x, box.top + art.y, art.w, art.h),
+    middle: {
+      left: across.left + across.width / 3,
+      right: across.left + (across.width * 2) / 3,
+    },
+  }
+}
+
+/**
+ * Every element whose `click` from here on in the test reaches the document
+ * unprevented, and so would follow a web link it is set in. Each is prevented
+ * there, after the reader has heard it, so no link is opened.
+ */
+function linksFollowed(): EventTarget[] {
+  const followed: EventTarget[] = []
+  const hear = (event: Event) => {
+    if (!event.defaultPrevented && event.target) followed.push(event.target)
+    event.preventDefault()
+  }
+  document.addEventListener('click', hear)
+  onTestFinished(() => document.removeEventListener('click', hear))
+  return followed
+}
+
+/**
+ * A finger's tap on a paged book's cover, a page image: the page already
+ * sizes it as the comic reader sizes a page, so a tap opens nothing and is the
+ * page's, its middle third showing or hiding the bars, on the picture or on
+ * the room the page leaves around it. Set in a link, a tap on its picture in
+ * the middle third follows the link. With upscale-to-fit off the room is the
+ * figure's, or the link's, around an image drawn its own size; on, it is
+ * inside the image, drawn the page's size with its picture contained in it.
+ */
+describe('a finger’s tap on a paged book’s cover', () => {
+  afterAll(() => vi.unstubAllGlobals())
+
+  it.each([
+    ['off', false],
+    ['on', true],
+  ] as const)(
+    'with upscale-to-fit %s, shows the bars from a tap in its middle third beside its picture, hides them from one on the picture, and opens nothing',
+    async (_, upscaleToFit) => {
+      pagedWith(upscaleToFit)
+      const host = await reader(covered)
+      const { figure, image, sheet, picture, middle } = coverOf(host)
+      const x = (middle.left + middle.right) / 2
+      const beside = { x, y: (sheet.top + picture.top) / 2 }
+      const on = { x, y: picture.top + picture.height / 2 }
+      const barsUp = () => host.querySelector('.reader-top-bar') !== null
+      const full = () => host.querySelector('dialog.book-figure-full')
+      // THE STATE THIS TEST NAMES: a tap above the picture, in the page's
+      // middle third, lands on the cover, on its image where upscaled, and
+      // one on the picture's middle on its image.
+      expect([
+        document.elementFromPoint(beside.x, beside.y) ===
+          (upscaleToFit ? image : figure),
+        beside.y < picture.top - 10,
+        document.elementFromPoint(on.x, on.y) === image,
+        barsUp(),
+      ]).toEqual([true, true, true, false])
+      const first = Date.now() / 1000
+      await tapAt(beside.x, beside.y, first)
+      await until(() => barsUp() || full() !== null)
+      await settled()
+      expect([barsUp(), full()]).toEqual([true, null])
+      expect(document.elementFromPoint(on.x, on.y)).toBe(image)
+      await tapAt(on.x, on.y, first + 1)
+      await until(() => !barsUp() || full() !== null)
+      await settled()
+      expect([barsUp(), full()]).toEqual([false, null])
+    },
+  )
+
+  it.each([
+    ['off', false],
+    ['on', true],
+  ] as const)(
+    'with upscale-to-fit %s, set in a web link, shows the bars from a tap in its middle third beside its picture, and follows the link from one on the picture',
+    async (_, upscaleToFit) => {
+      pagedWith(upscaleToFit)
+      const host = await reader(linkedCovered)
+      const { image, sheet, picture, middle } = coverOf(host)
+      const x = (middle.left + middle.right) / 2
+      const beside = { x, y: (sheet.top + picture.top) / 2 }
+      const on = { x, y: picture.top + picture.height / 2 }
+      const barsUp = () => host.querySelector('.reader-top-bar') !== null
+      const full = () => host.querySelector('dialog.book-figure-full')
+      const followed = linksFollowed()
+      // THE STATE THIS TEST NAMES: a tap above the picture, in the page's
+      // middle third, lands in the link, on its image where upscaled, and
+      // one on the picture's middle on its image.
+      expect([
+        document.elementFromPoint(beside.x, beside.y) ===
+          (upscaleToFit ? image : image.closest('a')),
+        beside.y < picture.top - 10,
+        document.elementFromPoint(on.x, on.y) === image,
+        barsUp(),
+      ]).toEqual([true, true, true, false])
+      const first = Date.now() / 1000
+      await tapAt(beside.x, beside.y, first)
+      await until(() => barsUp())
+      await settled()
+      expect([barsUp(), followed, full()]).toEqual([true, [], null])
+      await tapAt(on.x, on.y, first + 1)
+      await settled()
+      await settled()
+      expect([barsUp(), followed, full()]).toEqual([true, [image], null])
+    },
+  )
+
+  it('at 1280×800, shows the bars from a tap in the middle of a page-high cover, all picture across its page’s middle third, and hides them from a second', async () => {
+    const was = [window.innerWidth, window.innerHeight] as const
+    onTestFinished(() => page.viewport(...was))
+    await page.viewport(1280, 800)
+    pagedWith(true)
+    const host = await reader(tallCovered)
+    const { image, sheet, picture, middle } = coverOf(host)
+    const at = {
+      x: (middle.left + middle.right) / 2,
+      y: picture.top + picture.height / 2,
+    }
+    const barsUp = () => host.querySelector('.reader-top-bar') !== null
+    const full = () => host.querySelector('dialog.book-figure-full')
+    // THE STATE THIS TEST NAMES: the picture runs the page's height and
+    // across its middle third, so no room beside it is left there.
+    expect([
+      picture.top,
+      picture.bottom,
+      picture.left < middle.left,
+      picture.right > middle.right,
+      document.elementFromPoint(at.x, at.y) === image,
+    ]).toEqual([
+      expect.closeTo(sheet.top, 0),
+      expect.closeTo(sheet.bottom, 0),
+      true,
+      true,
+      true,
+    ])
+    const first = Date.now() / 1000
+    await tapAt(at.x, at.y, first)
+    await until(() => barsUp() || full() !== null)
+    await settled()
+    expect([barsUp(), full()]).toEqual([true, null])
+    expect(document.elementFromPoint(at.x, at.y)).toBe(image)
+    await tapAt(at.x, at.y, first + 1)
+    await until(() => !barsUp() || full() !== null)
+    await settled()
+    expect([barsUp(), full()]).toEqual([false, null])
+  })
+})
+
+/**
+ * A mouse over a paged book's cover set in a web link: the link's pointer
+ * only where a click follows the link, on its picture in the page's middle
+ * third, and no pointer on the room beside the picture or in an outer third.
+ */
+describe('a mouse over a paged book’s cover set in a link', () => {
+  afterAll(() => vi.unstubAllGlobals())
+
+  it.each([
+    ['off', false],
+    ['on', true],
+  ] as const)(
+    'with upscale-to-fit %s, shows the link’s pointer on its picture in the page’s middle third only',
+    async (_, upscaleToFit) => {
+      pagedWith(upscaleToFit)
+      const host = await reader(linkedCovered)
+      const { sheet, picture, middle } = coverOf(host)
+      const x = (middle.left + middle.right) / 2
+      const y = picture.top + picture.height / 2
+      const onPicture = { x, y }
+      const beside = { x, y: (sheet.top + picture.top) / 2 }
+      const outer = { x: picture.left + 2, y }
+      // THE STATE THIS TEST NAMES: the picture reaches into the page's left
+      // third, and there is room above it.
+      expect([outer.x < middle.left, beside.y < picture.top - 10]).toEqual([
+        true,
+        true,
+      ])
+      const cursors: string[] = []
+      for (const at of [onPicture, beside, outer, onPicture]) {
+        await mouse.moveTo(at.x, at.y)
+        const under = document.elementFromPoint(at.x, at.y) as Element
+        cursors.push(getComputedStyle(under).cursor)
+      }
+      expect(cursors).toEqual(['pointer', 'default', 'default', 'pointer'])
+    },
+  )
+})
+
+/**
+ * The keys after a tap on the room beside the picture of a paged book's
+ * cover set in a web link, in the page's middle third: the tap is the page's,
+ * so it leaves the link without focus, and Space and Enter after it are the
+ * reader's, where a focused link would take them both.
+ */
+describe('the keys after a tap beside the picture of a paged book’s cover set in a link', () => {
+  afterAll(() => vi.unstubAllGlobals())
+
+  /** `linkedCovered` with a second edition, for Space to swap to. */
+  const twice = {
+    ...linkedCovered,
+    editions: {
+      ...linkedCovered.editions,
+      fr: { ...linkedCovered.editions.en, label: 'French', language: 'fr' },
+    },
+  }
+
+  it.each([
+    ['finger', 'off', false],
+    ['finger', 'on', true],
+    ['mouse', 'off', false],
+    ['mouse', 'on', true],
+    ['pen', 'off', false],
+    ['pen', 'on', true],
+  ] as const)(
+    'after a %s’s, with upscale-to-fit %s, shows the bars and leaves the link unfocused, so Space swaps editions and Enter follows nothing',
+    async (by, _, upscaleToFit) => {
+      pagedWith(upscaleToFit)
+      const host = await reader(twice)
+      const text = host.querySelector('.book-text') as HTMLElement
+      const { image, sheet, picture, middle } = coverOf(host)
+      const at = {
+        x: (middle.left + middle.right) / 2,
+        y: (sheet.top + picture.top) / 2,
+      }
+      // Real keys reach the frame once something in it has had focus.
+      const stop = document.createElement('button')
+      document.body.append(stop)
+      stop.focus()
+      stop.remove()
+      const followed = linksFollowed()
+      // THE STATE THIS TEST NAMES: the tap lands in the link, above its
+      // picture, with focus on the body.
+      expect([
+        image.closest('a')?.contains(document.elementFromPoint(at.x, at.y)),
+        at.y < picture.top - 10,
+      ]).toEqual([true, true])
+      expect(document.activeElement).toBe(document.body)
+      if (by === 'finger') await tapAt(at.x, at.y)
+      else {
+        const pointer = by === 'mouse' ? mouse : pen
+        await act(async () => {
+          await pointer.moveTo(at.x, at.y)
+          await pointer.press()
+          await pointer.release()
+        })
+      }
+      await until(() => host.querySelector('.reader-top-bar') !== null)
+      await settled()
+      expect(host.querySelector('.reader-top-bar')).not.toBeNull()
+      expect(document.activeElement).toBe(document.body)
+      await act(async () => {
+        await userEvent.keyboard(' ')
+      })
+      await settled()
+      expect(text.lang).toBe('fr')
+      await act(async () => {
+        await userEvent.keyboard('{Enter}')
+      })
+      await settled()
+      expect(followed).toEqual([])
+    },
+  )
+})
+
+/** `book` with its small figure set before its first block, where a book opened afresh starts. */
+const mapped = {
+  ...book,
+  editions: {
+    en: {
+      ...book.editions.en,
+      figures: [{ before: 0, image: 0, alt: 'a map' }],
+    },
+  },
+}
+
+/** Where `image` draws its picture, contained in its own box and centred in it. */
+function pictureOf(image: HTMLImageElement): DOMRect {
+  const box = image.getBoundingClientRect()
+  const art = paintedBox(
+    { w: image.naturalWidth, h: image.naturalHeight },
+    { w: box.width, h: box.height },
+  )
+  return new DOMRect(box.left + art.x, box.top + art.y, art.w, art.h)
+}
+
+/**
+ * A figure opened full size: no larger than the screen lets it be drawn, and
+ * larger than its own size only while the comic reader's upscale-to-fit is
+ * on, so a small picture opens no smaller than a page drew it.
+ */
+describe('a figure opened full size', () => {
+  afterAll(() => vi.unstubAllGlobals())
+
+  it.each([
+    ['off', 'scrolled', false, false],
+    ['on', 'scrolled', true, false],
+    ['off', 'paged', false, true],
+    ['on', 'paged', true, true],
+  ] as const)(
+    'with upscale-to-fit %s, %s, draws a small picture its own size, or while on as large as the screen lets it be, never smaller than the page drew it',
+    async (_, __, upscaleToFit, paged) => {
+      localStorage.setItem(
+        'taiyaku.prefs.book-layout',
+        JSON.stringify({ mode: 'scroll', paged }),
+      )
+      localStorage.setItem(
+        'taiyaku.prefs.fit',
+        JSON.stringify({ upscaleToFit }),
+      )
+      onTestFinished(() => {
+        localStorage.removeItem('taiyaku.prefs.book-layout')
+        localStorage.removeItem('taiyaku.prefs.fit')
+      })
+      const host = await reader(mapped)
+      const figure = host.querySelector('.book-figure img') as HTMLImageElement
+      const onPage = figure.getBoundingClientRect()
+      // THE STATE THIS TEST NAMES: the page draws the 120×80 picture its own
+      // size, as a figure, not a page image.
+      expect([
+        onPage.width,
+        onPage.height,
+        figure.closest('[data-page-image]'),
+      ]).toEqual([120, 80, null])
+      const at = middleOf(figure)
+      await tapAt(at.x, at.y)
+      const full = () =>
+        host.querySelector<HTMLDialogElement>('dialog.book-figure-full')
+      await until(() => full()?.open === true)
+      const image = full()?.querySelector('img') as HTMLImageElement
+      await until(() => image.complete && image.naturalWidth > 0)
+      const dialog = full() as HTMLDialogElement
+      const style = getComputedStyle(dialog)
+      const room = {
+        w:
+          dialog.clientWidth -
+          Number.parseFloat(style.paddingLeft) -
+          Number.parseFloat(style.paddingRight),
+        h:
+          dialog.clientHeight -
+          Number.parseFloat(style.paddingTop) -
+          Number.parseFloat(style.paddingBottom),
+      }
+      const scale = upscaleToFit ? Math.min(room.w / 120, room.h / 80) : 1
+      const drawn = pictureOf(image)
+      expect([drawn.width, drawn.height]).toEqual([
+        expect.closeTo(120 * scale, 0),
+        expect.closeTo(80 * scale, 0),
+      ])
+      expect(scale > 1).toBe(upscaleToFit)
+      expect(drawn.width).toBeGreaterThanOrEqual(onPage.width - 0.5)
+      expect(drawn.height).toBeGreaterThanOrEqual(onPage.height - 0.5)
+    },
+  )
+
+  it('with upscale-to-fit on, keeps open the image its tap opened though the tap’s click lands on the room beside its picture, and closes it from a tap there, not on the picture', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.fit',
+      JSON.stringify({ upscaleToFit: true }),
+    )
+    onTestFinished(() => localStorage.removeItem('taiyaku.prefs.fit'))
+    const host = await reader(mapped)
+    const full = () =>
+      host.querySelector<HTMLDialogElement>('dialog.book-figure-full')
+    const { aimed } = clicks()
+    const at = middleOf(host.querySelector('.book-figure img') as Element)
+    await tapAt(at.x, at.y)
+    await settled()
+    const image = full()?.querySelector('img') as HTMLImageElement
+    await until(() => image.complete && image.naturalWidth > 0)
+    const picture = pictureOf(image)
+    // THE STATE THIS TEST NAMES: the tap's click was sent to the image drawn
+    // full size, above its picture, on the room the image leaves there.
+    expect([full()?.open, aimed, at.y < picture.top - 10]).toEqual([
+      true,
+      [image],
+      true,
+    ])
+
+    const on = { x: picture.left + picture.width / 2, y: picture.top + 10 }
+    await tapAt(on.x, on.y)
+    await settled()
+    expect(full()?.open).toBe(true)
+
+    expect(document.elementFromPoint(at.x, at.y)).toBe(image)
+    await tapAt(at.x, at.y)
+    await settled()
+    expect(full()).toBeNull()
   })
 })
 

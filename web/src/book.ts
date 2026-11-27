@@ -68,6 +68,18 @@ export interface Figure {
   image: number
   alt: string
   link?: LinkTo
+  /** Whether it is its EPUB document's whole content, no text beside it; none sent where it is not. */
+  page?: boolean
+}
+
+/**
+ * Whether a figure is a page of the book's own, a cover or a full-page
+ * illustration, which a paged reader gives a page to itself, centred on it
+ * and sized as the comic reader sizes a page. The one place that says which
+ * figures are: those the server marks as their document's whole content.
+ */
+export function isPageImage(figure: Figure): boolean {
+  return figure.page === true
 }
 
 export interface Block {

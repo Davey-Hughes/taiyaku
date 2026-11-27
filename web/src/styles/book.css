@@ -208,8 +208,68 @@
   max-block-size: 100cqb;
 }
 
-/* A figure tapped open: the whole screen, the image as large as fits in it,
- * and the space around it a tap that closes it. */
+/* A page of the book's own, a cover or a full-page illustration
+ * (`data-page-image`): paged, a page high, so nothing shares its page, and
+ * that high before its image loads, so loading it moves no text; its image is
+ * centred on it. Scrolled or compared it is a figure like any other: compared,
+ * a page-high cell would carry its row, and the other editions' words beside
+ * it, onto another page. */
+.book-text[data-paged]:not([data-compared]) .book-figure[data-page-image] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  block-size: 100cqb;
+  margin-block: 0;
+}
+
+/* A link it is set in fills the page and centres the image the same. */
+.book-text[data-paged]:not([data-compared])
+  .book-figure[data-page-image]
+  > a[data-link] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+/* A tap on it opens nothing and is the page's (`onPointerUp` in
+ * `BookReader.tsx`), but for one on its picture where it is set in a link, in
+ * the page's middle third, which follows the link (`onPageLink`). So it shows
+ * no zoom, and the link's pointer only there (`data-follows`, set as the
+ * pointer moves): either would say what a click does where it does not. */
+.book-text[data-paged]:not([data-compared]) .book-figure[data-page-image] img,
+.book-text[data-paged]:not([data-compared])
+  .book-figure[data-page-image]
+  > a[data-link] {
+  cursor: default;
+}
+
+.book-text[data-paged]:not([data-compared])
+  .book-figure[data-page-image]
+  > a[data-link]
+  img[data-follows] {
+  cursor: pointer;
+}
+
+/* Its image is sized as the comic reader sizes a page (`pageStyle` in
+ * `modules/fit.ts`), so one setting rules both: no larger than the page, and
+ * larger than its own size only while upscale-to-fit is on (`data-upscale`). */
+.book-text[data-paged]:not([data-compared]) .book-figure[data-page-image] img {
+  max-inline-size: 100%;
+  max-block-size: 100%;
+  object-fit: contain;
+}
+
+.book-text[data-paged][data-upscale]:not([data-compared])
+  .book-figure[data-page-image]
+  img {
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+/* A figure tapped open: the whole screen, the image no larger than fits in
+ * it, and the room around its picture a tap that closes it. */
 .book-figure-full {
   box-sizing: border-box;
   width: 100%;
@@ -235,6 +295,14 @@
   max-height: 100%;
   margin: auto;
   object-fit: contain;
+}
+
+/* While upscale-to-fit is on (`data-upscale`), the image takes the whole
+ * screen and contains its picture, so a small one opens as large as the
+ * screen lets it be, as a page image is drawn as large as its page lets it. */
+.book-figure-full[data-upscale] img {
+  width: 100%;
+  height: 100%;
 }
 
 /* An image set in a link is the link's: a tap follows the link rather than

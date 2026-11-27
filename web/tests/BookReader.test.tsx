@@ -189,7 +189,8 @@ function later(): number {
 
 /**
  * A press and release on `on`, the text by default, `travel` pixels down and
- * `sideways` across, `held` milliseconds long and starting at `at`.
+ * `sideways` across, `held` milliseconds long and starting at `at`, by the
+ * kind of pointer `by` names where it names one.
  */
 function touch(
   host: HTMLElement,
@@ -201,6 +202,7 @@ function touch(
     at = later(),
     x = 100,
     y = 100,
+    by,
   }: {
     on?: Element | null
     travel?: number
@@ -209,6 +211,7 @@ function touch(
     y?: number
     held?: number
     at?: number
+    by?: 'mouse' | 'touch'
   } = {},
   /** Whether a tap's wait, `TAP_MS`, runs out before the next touch. */
   waited = true,
@@ -219,6 +222,7 @@ function touch(
       clientX: x,
       clientY: y,
       bubbles: true,
+      pointerType: by,
     })
     Object.defineProperty(event, 'timeStamp', { value: time })
     return event
@@ -246,15 +250,24 @@ function doubleTap(host: HTMLElement, block: number, at = later()) {
 
 /**
  * A paged text 600 px wide, starting at the left edge, each block `i` on page
- * `pages[i]`, or running from one page to another, `[first, last]`; turned by
+ * `pages[i]`, or running from one page to another, `[first, last]`, and each
+ * figure, in the order drawn, on page `figures[i]`, or page 0; turned by
  * `scrollTo`, which scrolls as a browser would. When not paged, the blocks
  * before `above` are scrolled past. Answers the page shown.
  */
-function paging(pages: (number | [number, number])[], above = 0) {
+function paging(
+  pages: (number | [number, number])[],
+  above = 0,
+  figures: number[] = [],
+) {
   let left = 0
   const isText = (el: Element) => el.classList.contains('book-text')
-  const span = (block: number) => {
-    const on = pages[block] ?? 0
+  const span = (el: Element) => {
+    const figure = [...document.querySelectorAll('[data-figure]')].indexOf(el)
+    const on =
+      figure >= 0
+        ? (figures[figure] ?? 0)
+        : (pages[Number((el as HTMLElement).dataset.block)] ?? 0)
     return typeof on === 'number' ? [on, on] : on
   }
   /** One line's box on page `page`, as the page shown places it. */
@@ -262,7 +275,10 @@ function paging(pages: (number | [number, number])[], above = 0) {
     const at = page * 600 - left + 24
     return { left: at, right: at + 552, top: 0, bottom } as DOMRect
   }
-  const last = Math.max(...pages.map((_, i) => span(i)[1]))
+  const last = Math.max(
+    ...pages.map((on) => (typeof on === 'number' ? on : on[1])),
+    ...figures,
+  )
   vi.spyOn(Element.prototype, 'clientWidth', 'get').mockImplementation(
     function (this: Element) {
       return isText(this) ? 600 : 0
@@ -287,7 +303,7 @@ function paging(pages: (number | [number, number])[], above = 0) {
   vi.spyOn(Element.prototype, 'getClientRects').mockImplementation(function (
     this: Element,
   ) {
-    const [first, end] = span(Number((this as HTMLElement).dataset.block))
+    const [first, end] = span(this)
     return [line(first, 100), line(end, 100)] as unknown as DOMRectList
   })
   vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
@@ -302,7 +318,7 @@ function paging(pages: (number | [number, number])[], above = 0) {
         } as DOMRect
       }
       const block = Number((this as HTMLElement).dataset.block)
-      const [first, end] = span(block)
+      const [first, end] = span(this)
       const bottom = block < above ? -10 : 100
       return {
         ...line(first, bottom),
@@ -4995,6 +5011,98 @@ const figured = {
   },
 }
 
+/**
+ * `book` with a cover before its first block, a page of its own, a title
+ * graphic after the cover, as an image-only title page holding more than one
+ * image sends it, and a map after the first block.
+ */
+const covered = {
+  ...book,
+  editions: {
+    ...book.editions,
+    en: {
+      ...book.editions.en,
+      figures: [
+        { before: 0, image: 3, alt: 'the cover', page: true },
+        { before: 0, image: 4, alt: 'the title' },
+        { before: 1, image: 7, alt: 'a map' },
+      ],
+    },
+  },
+}
+
+/**
+ * `book` with a plate set before chapter two's heading, `page` saying
+ * whether it is sent as a page of its own; one that is not can still take a
+ * page, as a picture a page high does.
+ */
+const plated = (page: boolean) => ({
+  ...book,
+  editions: {
+    ...book.editions,
+    en: {
+      ...book.editions.en,
+      figures: [{ before: 3, image: 5, alt: 'the plate', page }],
+    },
+  },
+})
+
+/** `covered` with only its cover, set in a web link. */
+const linkedCover = {
+  ...covered,
+  editions: {
+    ...covered.editions,
+    en: {
+      ...covered.editions.en,
+      figures: [
+        {
+          before: 0,
+          image: 3,
+          alt: 'the cover',
+          page: true,
+          link: { url: 'https://y.org/', note: false },
+        },
+      ],
+    },
+  },
+}
+
+/**
+ * `image` drawn from a picture `natural` px across and down into `box` on
+ * the screen, as a browser draws it: by default `paging`'s whole page.
+ */
+function drawnInto(
+  image: Element,
+  [w, h]: [number, number],
+  box = { left: 0, top: 0, width: 600, height: 800 },
+) {
+  Object.defineProperties(image, {
+    naturalWidth: { value: w, configurable: true },
+    naturalHeight: { value: h, configurable: true },
+    getBoundingClientRect: {
+      configurable: true,
+      value: () => ({
+        ...box,
+        right: box.left + box.width,
+        bottom: box.top + box.height,
+      }),
+    },
+  })
+}
+
+/** The click the browser sends on `on` after a tap: `taken` where the tap cancelled it. */
+function clickAfter(on: Element): 'taken' | 'followed' {
+  const click = new MouseEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    detail: 1,
+  })
+  act(() => {
+    on.dispatchEvent(click)
+  })
+  return click.defaultPrevented ? 'taken' : 'followed'
+}
+
 /** The images of `within`, by their source. */
 const sources = (within: Element) =>
   [...within.querySelectorAll('img')].map((img) => img.getAttribute('src'))
@@ -5089,6 +5197,274 @@ describe('a book’s images between blocks', () => {
     expect(host.querySelector('dialog')).toBeNull()
   })
 
+  it.each([
+    ['unset', undefined, 'true'],
+    ['on', true, 'true'],
+    ['off', false, undefined],
+  ])(
+    'lets a figure opened full size grow past its own size as the comic reader’s upscale-to-fit setting says, %s',
+    async (_, upscaleToFit, upscale) => {
+      if (upscaleToFit !== undefined) {
+        localStorage.setItem(
+          'taiyaku.prefs.fit',
+          JSON.stringify({ upscaleToFit }),
+        )
+      }
+      const { host } = await opened(undefined, figured)
+      touch(host, { on: host.querySelector('.book-figure img') })
+      expect(
+        host.querySelector<HTMLElement>('dialog.book-figure-full')?.dataset
+          .upscale,
+      ).toBe(upscale)
+    },
+  )
+
+  it('marks a figure sent as a page of its own as a page image, and no other', async () => {
+    // jsdom has no `scrollTo`, which opening the book at its cover calls.
+    Element.prototype.scrollTo = vi.fn()
+    const { host } = await opened(undefined, covered)
+    const [cover, title, map] =
+      host.querySelectorAll<HTMLElement>('.book-figure')
+    expect(cover.querySelector('img')?.alt).toBe('the cover')
+    expect(cover.dataset.pageImage).toBe('true')
+    expect(title.dataset.pageImage).toBeUndefined()
+    expect(map.dataset.pageImage).toBeUndefined()
+  })
+
+  it.each([
+    ['unset', undefined, 'true'],
+    ['on', true, 'true'],
+    ['off', false, undefined],
+  ])(
+    'lets a page image grow past its own size as the comic reader’s upscale-to-fit setting says, %s',
+    async (_, upscaleToFit, upscale) => {
+      if (upscaleToFit !== undefined) {
+        localStorage.setItem(
+          'taiyaku.prefs.fit',
+          JSON.stringify({ upscaleToFit }),
+        )
+      }
+      Element.prototype.scrollTo = vi.fn()
+      const { host } = await opened(undefined, covered)
+      expect(
+        host.querySelector<HTMLElement>('.book-text')?.dataset.upscale,
+      ).toBe(upscale)
+    },
+  )
+
+  it('turns a paged book’s page on a tap on a page image’s outer thirds, and shows or hides the bars from its middle, opening nothing', async () => {
+    paged()
+    const page = paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened(undefined, covered)
+    const cover = host.querySelector('[data-page-image] img') as Element
+    // Its picture the whole page, so every tap here is on it.
+    drawnInto(cover, [600, 800])
+    const bars = () => host.querySelector('.reader-top-bar') !== null
+    const full = () => host.querySelector('dialog.book-figure-full')
+    touch(host, { on: cover, x: 500 })
+    expect([page(), bars(), full()]).toEqual([1, false, null])
+    touch(host, { on: cover, x: 100 })
+    expect([page(), bars(), full()]).toEqual([0, false, null])
+    touch(host, { on: cover, x: 300 })
+    expect([page(), bars(), full()]).toEqual([0, true, null])
+    touch(host, { on: cover, x: 300 })
+    expect([page(), bars(), full()]).toEqual([0, false, null])
+  })
+
+  it('takes the click of a tap that turns the page from a page image set in a web link, a mouse’s too, and leaves one on its middle to the link', async () => {
+    paged()
+    const page = paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened(undefined, linkedCover)
+    const cover = host.querySelector('[data-page-image] img') as Element
+    expect(cover.closest('a')?.target).toBe('_blank')
+    drawnInto(cover, [600, 800])
+    const clicked = () => clickAfter(cover)
+    touch(host, { on: cover, x: 500, by: 'mouse' })
+    expect(clicked()).toBe('taken')
+    expect(page()).toBe(1)
+    touch(host, { on: cover, x: 100, by: 'touch' })
+    expect(clicked()).toBe('taken')
+    expect(page()).toBe(0)
+    touch(host, { on: cover, x: 300, by: 'mouse' })
+    expect(clicked()).toBe('followed')
+    expect(page()).toBe(0)
+    expect(host.querySelector('dialog.book-figure-full')).toBeNull()
+  })
+
+  it('shows or hides the bars from a tap on a paged page image’s middle third, on its picture or beside it, and opens nothing', async () => {
+    paged()
+    const page = paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened(undefined, covered)
+    const cover = host.querySelector('[data-page-image] img') as Element
+    // A wide picture, drawn across the page from 300 px down to 500.
+    drawnInto(cover, [600, 200])
+    const bars = () => host.querySelector('.reader-top-bar') !== null
+    const full = () => host.querySelector('dialog.book-figure-full')
+    // Above it, on the figure, as where the image is drawn its own size.
+    touch(host, { on: cover.closest('figure'), x: 300, y: 100 })
+    expect([bars(), full(), page()]).toEqual([true, null, 0])
+    touch(host, { on: cover, x: 300, y: 400 })
+    expect([bars(), full(), page()]).toEqual([false, null, 0])
+    // Below it, on the image, as where the image is drawn the page's size.
+    touch(host, { on: cover, x: 300, y: 700 })
+    expect([bars(), full(), page()]).toEqual([true, null, 0])
+    touch(host, { on: cover, x: 300, y: 400 })
+    expect([bars(), full(), page()]).toEqual([false, null, 0])
+  })
+
+  it('follows the link from a tap on the picture of a paged page image set in a web link, and shows or hides the bars from one beside a tall picture', async () => {
+    paged()
+    const page = paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened(undefined, linkedCover)
+    const cover = host.querySelector('[data-page-image] img') as Element
+    // A tall picture, drawn down the page from 250 px across to 350.
+    drawnInto(cover, [100, 800])
+    const bars = () => host.querySelector('.reader-top-bar') !== null
+    touch(host, { on: cover, x: 210, y: 400, by: 'mouse' })
+    expect([clickAfter(cover), bars(), page()]).toEqual(['taken', true, 0])
+    touch(host, { on: cover, x: 390, y: 400, by: 'touch' })
+    expect([clickAfter(cover), bars(), page()]).toEqual(['taken', false, 0])
+    touch(host, { on: cover, x: 300, y: 400, by: 'mouse' })
+    expect([clickAfter(cover), bars(), page()]).toEqual(['followed', false, 0])
+    expect(host.querySelector('dialog.book-figure-full')).toBeNull()
+  })
+
+  it('opens a page image full size from a tap on it in a scrolled book, drawn or not, on its picture or beside it', async () => {
+    Element.prototype.scrollTo = vi.fn()
+    const { host } = await opened(undefined, covered)
+    const cover = host.querySelector('[data-page-image] img') as Element
+    const shown = () =>
+      host.querySelector('dialog.book-figure-full img')?.getAttribute('alt')
+    touch(host, { on: cover, x: 300 })
+    expect(shown()).toBe('the cover')
+    press('Escape')
+    expect(host.querySelector('dialog')).toBeNull()
+    // A wide picture, drawn across the page from 300 px down to 500, tapped
+    // above it, where paged the tap would be the page's, and then on it.
+    drawnInto(cover, [600, 200])
+    touch(host, { on: cover, x: 300, y: 100 })
+    expect(shown()).toBe('the cover')
+    press('Escape')
+    touch(host, { on: cover, x: 300, y: 400 })
+    expect(shown()).toBe('the cover')
+  })
+
+  it.each([
+    ['', covered],
+    [', set in a web link', linkedCover],
+  ])(
+    'shows or hides the bars from a tap on the middle of a paged page image not drawn yet%s',
+    async (_, sent) => {
+      paged()
+      paging([0, 0, 1, 1, 2, 2])
+      const { host } = await opened(undefined, sent)
+      const cover = host.querySelector('[data-page-image] img') as Element
+      touch(host, { on: cover, x: 300, by: 'mouse' })
+      expect([
+        clickAfter(cover),
+        host.querySelector('.reader-top-bar') !== null,
+        host.querySelector('dialog.book-figure-full'),
+      ]).toEqual(['taken', true, null])
+    },
+  )
+
+  it('takes the click of a tap beside the picture of a paged page image set in a web link, a mouse’s too, and shows or hides the bars, and leaves one on the picture to the link', async () => {
+    paged()
+    const page = paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened(undefined, linkedCover)
+    const cover = host.querySelector('[data-page-image] img') as Element
+    const link = cover.closest('a') as Element
+    drawnInto(cover, [600, 200])
+    const bars = () => host.querySelector('.reader-top-bar') !== null
+    touch(host, { on: cover, x: 300, y: 100, by: 'mouse' })
+    expect([clickAfter(cover), bars(), page()]).toEqual(['taken', true, 0])
+    touch(host, { on: link, x: 300, y: 700, by: 'touch' })
+    expect([clickAfter(link), bars(), page()]).toEqual(['taken', false, 0])
+    touch(host, { on: cover, x: 300, y: 400, by: 'mouse' })
+    expect([clickAfter(cover), bars(), page()]).toEqual(['followed', false, 0])
+  })
+
+  it('opens a page image full size from a tap on its outer thirds when compared, where it is drawn as any figure', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'compare', paged: true }),
+    )
+    const page = paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened(undefined, covered)
+    expect(
+      host.querySelector('.book-text')?.hasAttribute('data-compared'),
+    ).toBe(true)
+    touch(host, { on: host.querySelector('[data-page-image] img'), x: 500 })
+    expect(page()).toBe(0)
+    expect(
+      host.querySelector('dialog.book-figure-full img')?.getAttribute('alt'),
+    ).toBe('the cover')
+  })
+
+  it('opens a paged book afresh on the page of the cover set before its first block, not on the title’s after it', async () => {
+    paged()
+    const page = paging([2, 2, 3, 3, 4, 4], 0, [0, 1, 2])
+    await opened(undefined, covered)
+    expect(page()).toBe(0)
+  })
+
+  it('reads page 1 of the first chapter on the cover a paged book opens on afresh, its first block a heading, not page 0', async () => {
+    paged()
+    // The cover alone on page 0; the title and chapter one from page 1 to
+    // page 2, where chapter two starts.
+    const page = paging([1, 1, 2, 2, 3, 3], 0, [0, 1, 1])
+    const { host } = await opened(undefined, covered)
+    expect(page()).toBe(0)
+    touch(host, { x: 300 })
+    expect(readout(host)).toBe(
+      'page 1 of 4 · <1m read · CHAPTER ONE · page 1 of 3',
+    )
+  })
+
+  it('opens a scrolled book afresh at the top of the cover set before its first block, not at the title after it or the block', async () => {
+    Element.prototype.scrollTo = vi.fn()
+    // The title drawn below the cover; anything else measured as jsdom does.
+    const measured = Element.prototype.getBoundingClientRect
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        const alt = this.querySelector(':scope > img')?.getAttribute('alt')
+        return alt === 'the title'
+          ? ({ top: 300, bottom: 400 } as DOMRect)
+          : measured.call(this)
+      },
+    )
+    await opened(undefined, covered)
+    expect(scrolledTo()).toEqual([])
+    expect(Element.prototype.scrollTo).toHaveBeenCalledWith({ top: 0 })
+  })
+
+  it.each([
+    ['a page image', true],
+    ['a figure not sent as a page', false],
+  ])(
+    'goes from the contents to the page of a chapter’s heading, not to %s set before it',
+    async (_, page) => {
+      paged()
+      // Chapter one on pages 0 and 1, the plate alone on page 2, and chapter
+      // two's heading on page 3. The plate's page is the chapter's first
+      // (`pagesOf`), so the heading's reads page 2 of the chapter.
+      const shown = paging([0, 0, 1, 3, 3, 4], 0, [2])
+      const { host } = await opened(undefined, plated(page))
+      press('t')
+      const entries = host.querySelectorAll<HTMLElement>(
+        '[aria-label="Contents"] li button',
+      )
+      expect(entries[1]?.textContent).toBe('CHAPTER TWO · The End')
+      act(() => entries[1]?.click())
+      expect(shown()).toBe(3)
+      press('t')
+      press('Tab')
+      expect(readout(host)).toBe(
+        'page 4 of 5 · <1m read · The End · page 2 of 3',
+      )
+    },
+  )
+
   it('leaves the bars as they were on a figure tapped just after a tap on the text', async () => {
     const { host } = await opened(undefined, figured)
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
@@ -5106,6 +5482,8 @@ describe('a book’s images between blocks', () => {
     touch(host, { on: host.querySelector('.book-figure img') })
     const full = () => host.querySelector('dialog.book-figure-full')
     const image = full()?.querySelector('img') ?? null
+    // Drawn, its picture filling its box, so every tap on it is on the picture.
+    drawnInto(image as Element, [600, 800])
     touch(host, { on: image })
     act(() => image?.click())
     expect(full()).not.toBeNull()

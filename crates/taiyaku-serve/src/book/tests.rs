@@ -1014,6 +1014,23 @@ async fn an_image_set_in_a_link_is_sent_with_the_link() {
 }
 
 #[tokio::test]
+async fn a_figure_that_is_its_documents_whole_content_is_sent_as_a_page() {
+    let tmp = crate::test_support::Fixture::new("book-image-page");
+    illustrated_epub(
+        &tmp,
+        "en.epub",
+        r#"<div><img src="a.png" alt="Cover"/></div>"#,
+        &[("a.png", &png(10))],
+    );
+    let book = json_of(get(&one_book(&tmp, "en.epub"), reader()).await).await;
+    assert_eq!(
+        book["editions"]["en"]["figures"],
+        serde_json::json!([{"before": 0, "image": 0, "alt": "Cover", "page": true}]),
+        "an image that is its document's whole content is sent with \"page\": true"
+    );
+}
+
+#[tokio::test]
 async fn a_block_with_no_marks_sends_no_marks_field() {
     let tmp = crate::test_support::Fixture::new("book-no-marks");
     let book = json_of(book_of(&tmp, "en", reader()).await).await;

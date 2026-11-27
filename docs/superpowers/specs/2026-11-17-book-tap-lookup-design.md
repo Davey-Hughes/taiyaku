@@ -57,6 +57,12 @@ There is one sensible way to find the word: the server matches the longest prefi
 - **The tap, with the mode on:**
   - In `onPointerUp`, after the existing slop and hold check and before the double-tap logic, a single tap on a word acts at once and clears the pending tap state.
   - A tap on a link, a note mark, a figure or an aside keeps its own meaning.
+    *Note, 2026-11-25: narrowed for a page image, a cover or full-page
+    illustration drawn on a page of its own, by the owner's rulings of
+    2026-11-25 (O572, the book image pages PR). Paged outside compare, a tap
+    on its outer thirds turns the page, and one in the middle third shows or
+    hides the bars, as on a page's empty room, opening nothing; only a tap on
+    its picture, where it is set in a link, follows the link.*
   - A tap on empty space, or on whitespace or punctuation, does what it does today.
   - A double tap still peeks.
 - **Finding the word:**

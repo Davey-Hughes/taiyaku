@@ -4429,3 +4429,97 @@ describe('a match gone to, through the text laid out again where it stands', () 
     }
   }
 })
+
+describe('a book opened afresh, scrolled, as the figures set before its first block take their size', () => {
+  // The cover and the title with no size until a test gives them one, as an
+  // image has none, scrolled, until it loads.
+  const unloaded = document.createElement('style')
+  const sizedAs = (length: number) => `
+    .book-text:not([data-paged], [data-vertical]) .book-figure[data-figure] img { aspect-ratio: auto; height: ${length}px }
+    .book-text[data-vertical]:not([data-paged]) .book-figure[data-figure] img { width: ${length}px }
+  `
+
+  for (const flow of FLOWS.filter((f) => !f.paged)) {
+    it(`stays on the cover at the top as they load, and saves no place, ${flow.name}`, async () => {
+      const edition = book.editions[flow.edition as 'en' | 'ja']
+      const covered = {
+        ...book,
+        hub: flow.edition,
+        editions: {
+          ...book.editions,
+          [flow.edition]: {
+            ...edition,
+            figures: [
+              { before: 0, image: 1, alt: 'the cover', page: true },
+              { before: 0, image: 2, alt: 'the title', page: true },
+              ...edition.figures,
+            ],
+          },
+        },
+      }
+      unloaded.textContent = sizedAs(0)
+      document.head.append(unloaded)
+      onTestFinished(() => unloaded.remove())
+      await page.viewport(SET_IN.width, SET_IN.height)
+      await settled()
+      localStorage.setItem(
+        'taiyaku.prefs.book-layout',
+        JSON.stringify({ paged: false }),
+      )
+      localStorage.setItem(
+        'taiyaku.prefs.book-text',
+        JSON.stringify({ vertical: flow.vertical }),
+      )
+      const answers = served(flow.edition, 0, covered)
+      // No place saved, so the book opens afresh.
+      const fetched = vi.fn(async (url: string, init?: RequestInit) =>
+        url === '/api/works/w/progress' && init?.method !== 'PUT'
+          ? Response.json({ positions: [] })
+          : answers(url, init),
+      )
+      vi.stubGlobal('fetch', fetched)
+      const host = mount(
+        <div style={{ position: 'fixed', inset: 0 }}>
+          <BookReader work="w" onLeave={() => {}} />
+        </div>,
+      )
+      for (let i = 0; i < 100 && !host.querySelector('[data-block="0"]'); i++) {
+        await act(() => new Promise((done) => setTimeout(done, 10)))
+      }
+      await settled()
+      const text = textOf(host)
+      expect(text.dataset.vertical !== undefined).toBe(flow.vertical)
+      const [cover, title] = [...text.querySelectorAll('.book-figure')]
+      const first = text.querySelector('[data-block="0"]') as HTMLElement
+      const length = (el: Element) => {
+        const box = el.getBoundingClientRect()
+        return flow.vertical ? box.width : box.height
+      }
+      // THE STATE THIS TEST NAMES: the book placed while the figures before
+      // its first block have no size.
+      expect([cover, title].map(length)).toEqual([0, 0])
+      unloaded.textContent = sizedAs(600)
+      for (let i = 0; i < 4; i++) await settled()
+      expect([cover, title].map(length)).toEqual([600, 600])
+      const screen = flow.vertical ? text.clientWidth : text.clientHeight
+      const coverAt = startOf(text, cover.getBoundingClientRect())
+      // Soft, so a screen carried past the cover still says what it saved.
+      expect
+        .soft(coverAt, 'the cover starts on the screen')
+        .toBeGreaterThanOrEqual(0)
+      expect.soft(coverAt, 'the cover starts at its top').toBeLessThan(50)
+      expect
+        .soft(
+          startOf(text, first.getBoundingClientRect()),
+          'the first block is past the screen',
+        )
+        .toBeGreaterThan(screen)
+      await act(() => new Promise((done) => setTimeout(done, 1200)))
+      const saved = fetched.mock.calls.filter(
+        ([url, init]) =>
+          url === '/api/works/w/progress' && init?.method === 'PUT',
+      )
+      expect(saved).toEqual([])
+    })
+  }
+})

@@ -1,6 +1,8 @@
+import type { CSSProperties } from 'react'
 import { describe, expect, it } from 'vitest'
 import { BookFootnote } from '../src/BookFootnote'
 import '../src/index.css'
+import { paintedBox } from '../src/notes'
 import './support/dialog'
 import { mount } from './support/mount'
 
@@ -117,6 +119,288 @@ describe('book.css on an image set in a link', () => {
     expect(cursor('linked')).toBe('pointer')
     expect(cursor('figure')).toBe('pointer')
     expect(cursor('plain')).toBe('zoom-in')
+  })
+})
+
+/** An image `width` by `height` px. */
+function svg(width: number, height: number): string {
+  return `data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="${width}" height="${height}"/></svg>`,
+  )}`
+}
+
+/**
+ * Where `image` draws its picture: contained in its own box and centred in
+ * it, which this checks, and so where `paintedBox` reckons it.
+ */
+function drawnOf(image: HTMLImageElement): DOMRect {
+  const style = getComputedStyle(image)
+  expect([style.objectFit, style.objectPosition]).toEqual([
+    'contain',
+    '50% 50%',
+  ])
+  const box = image.getBoundingClientRect()
+  const art = paintedBox(
+    { w: image.naturalWidth, h: image.naturalHeight },
+    { w: box.width, h: box.height },
+  )
+  return new DOMRect(box.left + art.x, box.top + art.y, art.w, art.h)
+}
+
+const middleOf = (rect: DOMRect) => ({
+  x: rect.left + rect.width / 2,
+  y: rect.top + rect.height / 2,
+})
+
+describe('book.css on a page image', () => {
+  /**
+   * A text 400 px wide and 600 high holding a page image between two
+   * paragraphs: paged, scrolled, or paged and compared, where the three are
+   * the first cell of a row beside a second edition's. Its image is not
+   * loaded (`loaded`). `upscale` is the comic reader's upscale-to-fit
+   * setting, set on the text as the book reader sets it, `linked` sets the
+   * image in a link, and `vertical` sets the text as vertical Japanese.
+   */
+  const withPageImage = (
+    as: 'paged' | 'scrolled' | 'compared',
+    { upscale = false, linked = false, vertical = false } = {},
+  ) => {
+    const image = <img alt="cover" />
+    const read = (
+      <>
+        <p>Before.</p>
+        <figure className="book-figure" data-figure data-page-image>
+          {linked ? (
+            <a href="#n" data-link>
+              {image}
+            </a>
+          ) : (
+            image
+          )}
+        </figure>
+        <p>After.</p>
+      </>
+    )
+    return mount(
+      <div className="reader" style={{ display: 'flex', height: '600px' }}>
+        <div
+          className="book-text"
+          data-paged={as !== 'scrolled' || undefined}
+          data-compared={as === 'compared' || undefined}
+          data-upscale={upscale || undefined}
+          data-vertical={vertical || undefined}
+          lang={vertical ? 'ja' : undefined}
+          style={
+            {
+              '--book-column-width': '20em',
+              '--book-text-size': '16px',
+              width: '400px',
+              height: '600px',
+            } as CSSProperties
+          }
+        >
+          {as === 'compared' ? (
+            <div className="book-row" data-block={0}>
+              <div className="book-cell" data-column="en">
+                {read}
+              </div>
+              <div className="book-cell" data-column="ko">
+                <p>Avant.</p>
+              </div>
+            </div>
+          ) : (
+            read
+          )}
+        </div>
+      </div>,
+    )
+  }
+
+  /** `host`'s image, loaded from an image `width` by `height` px. */
+  async function loaded(host: HTMLElement, width: number, height: number) {
+    const image = host.querySelector('img') as HTMLImageElement
+    image.src = svg(width, height)
+    await image.decode()
+    return image
+  }
+
+  it.each([
+    ['off', false],
+    ['on', true],
+  ] as const)(
+    'gives it a whole page of a paged text before its image loads, and loading it moves no text, with upscale-to-fit %s',
+    async (_, upscale) => {
+      const host = withPageImage('paged', { upscale })
+      const text = host.querySelector('.book-text') as HTMLElement
+      const figure = host.querySelector('figure') as HTMLElement
+      const after = host.querySelectorAll('p')[1] as HTMLElement
+      const style = getComputedStyle(text)
+      const top =
+        text.getBoundingClientRect().top + Number.parseFloat(style.paddingTop)
+      const pageHigh =
+        text.clientHeight -
+        Number.parseFloat(style.paddingTop) -
+        Number.parseFloat(style.paddingBottom)
+      const box = figure.getBoundingClientRect()
+      expect(box.height).toBeCloseTo(pageHigh, 0)
+      expect(box.top).toBeCloseTo(top, 0)
+      // Its own page: the paragraph after it starts the next page at its top.
+      const next = after.getBoundingClientRect()
+      expect(next.top).toBeCloseTo(top, 0)
+      await loaded(host, 40, 30)
+      expect(figure.getBoundingClientRect().toJSON()).toEqual(box.toJSON())
+      expect(after.getBoundingClientRect().toJSON()).toEqual(next.toJSON())
+    },
+  )
+
+  /**
+   * Vertical, the pages run down the screen, a `clientHeight` apart, and a
+   * page's width is its block size, which the figure takes whole.
+   */
+  it.each([
+    ['off', false],
+    ['on', true],
+  ] as const)(
+    'gives it a whole page of a paged vertical text, the next block on the page below, with upscale-to-fit %s',
+    async (_, upscale) => {
+      const host = withPageImage('paged', { upscale, vertical: true })
+      const text = host.querySelector('.book-text') as HTMLElement
+      const figure = host.querySelector('figure') as HTMLElement
+      const after = host.querySelectorAll('p')[1] as HTMLElement
+      await loaded(host, 40, 30)
+      const style = getComputedStyle(text)
+      expect(style.writingMode).toBe('vertical-rl')
+      const outer = text.getBoundingClientRect()
+      const page = {
+        left: outer.left + Number.parseFloat(style.paddingLeft),
+        right: outer.right - Number.parseFloat(style.paddingRight),
+        top: outer.top + Number.parseFloat(style.paddingTop),
+        bottom:
+          outer.top +
+          text.clientHeight -
+          Number.parseFloat(style.paddingBottom),
+      }
+      // The page after the one "Before." is on, and "After." on the next.
+      const down = text.clientHeight
+      const box = figure.getBoundingClientRect()
+      expect([box.left, box.right, box.top, box.bottom]).toEqual(
+        [page.left, page.right, page.top + down, page.bottom + down].map(
+          (edge) => expect.closeTo(edge, 0),
+        ),
+      )
+      const next = after.getBoundingClientRect()
+      expect(next.right).toBeCloseTo(page.right, 0)
+      expect(next.top).toBeCloseTo(page.top + 2 * down, 0)
+    },
+  )
+
+  /**
+   * As the comic reader sizes a page: never larger than the page, and larger
+   * than its own size only while upscale-to-fit is on. Set in a link or not,
+   * and set across or down, the same.
+   */
+  it.each([
+    ['off', 40, 30, 'its own size'],
+    ['on', 40, 30, 'as large as the page lets it'],
+    ['off', 2000, 1000, 'as large as the page lets it'],
+    ['on', 2000, 1000, 'as large as the page lets it'],
+    ['off', 1000, 4000, 'as large as the page lets it'],
+    ['on', 1000, 4000, 'as large as the page lets it'],
+  ] as const)(
+    'with upscale-to-fit %s, draws a %i×%i image %s, centred on its page, set in a link or not, across or down',
+    async (setting, width, height, size) => {
+      for (const [linked, vertical] of [
+        [false, false],
+        [true, false],
+        [false, true],
+        [true, true],
+      ]) {
+        const host = withPageImage('paged', {
+          upscale: setting === 'on',
+          linked,
+          vertical,
+        })
+        const image = await loaded(host, width, height)
+        const page = (
+          host.querySelector('figure') as HTMLElement
+        ).getBoundingClientRect()
+        const drawn = drawnOf(image)
+        const scale =
+          size === 'its own size'
+            ? 1
+            : Math.min(page.width / width, page.height / height)
+        const said = `linked: ${linked}, vertical: ${vertical}`
+        expect(drawn.width, said).toBeCloseTo(width * scale, 0)
+        expect(drawn.height, said).toBeCloseTo(height * scale, 0)
+        expect(middleOf(drawn).x, said).toBeCloseTo(middleOf(page).x, 0)
+        expect(middleOf(drawn).y, said).toBeCloseTo(middleOf(page).y, 0)
+        if (linked) {
+          // The link is under all of the picture, so a tap on it is the link's.
+          const link = (
+            host.querySelector('a') as HTMLElement
+          ).getBoundingClientRect()
+          expect(link.left).toBeLessThanOrEqual(drawn.left + 0.5)
+          expect(link.top).toBeLessThanOrEqual(drawn.top + 0.5)
+          expect(link.right).toBeGreaterThanOrEqual(drawn.right - 0.5)
+          expect(link.bottom).toBeGreaterThanOrEqual(drawn.bottom - 0.5)
+        }
+      }
+    },
+  )
+
+  it('shows neither zoom nor a link’s pointer on it paged, set in a link or not, the pointer where a press follows its link, and zoom compared', () => {
+    const cursor = (host: HTMLElement) =>
+      getComputedStyle(host.querySelector('img') as Element).cursor
+    const follows = withPageImage('paged', { linked: true, upscale: true })
+    follows.querySelector('img')?.toggleAttribute('data-follows', true)
+    expect([
+      cursor(withPageImage('paged')),
+      cursor(withPageImage('paged', { linked: true })),
+      cursor(withPageImage('paged', { upscale: true })),
+      cursor(follows),
+      cursor(withPageImage('compared')),
+    ]).toEqual(['default', 'default', 'default', 'pointer', 'zoom-in'])
+  })
+
+  it('shows no link’s pointer on the room beside its picture paged, drawn its own size in a link', async () => {
+    const host = withPageImage('paged', { linked: true })
+    const image = await loaded(host, 40, 30)
+    const text = host.querySelector('.book-text') as HTMLElement
+    const figure = host.querySelector('figure') as HTMLElement
+    // Its page brought onto the screen, the one after "Before.".
+    text.scrollLeft =
+      figure.getBoundingClientRect().left - text.getBoundingClientRect().left
+    const page = figure.getBoundingClientRect()
+    const picture = drawnOf(image)
+    const beside = document.elementFromPoint(
+      middleOf(page).x,
+      (page.top + picture.top) / 2,
+    ) as Element
+    // THE STATE THIS TEST NAMES: the room above the picture is the link's.
+    expect([beside, picture.top - page.top > 20]).toEqual([
+      host.querySelector('a'),
+      true,
+    ])
+    expect(getComputedStyle(beside).cursor).toBe('default')
+  })
+
+  it('leaves it a figure like any other in a scrolled text', () => {
+    const host = withPageImage('scrolled')
+    expect(
+      getComputedStyle(host.querySelector('img') as Element).objectFit,
+    ).toBe('fill')
+  })
+
+  it('leaves it a figure like any other in a compared paged text, so its row is not carried onto a page of its own', () => {
+    const host = withPageImage('compared')
+    const text = host.querySelector('.book-text') as HTMLElement
+    const figure = host.querySelector('figure') as HTMLElement
+    expect(figure.getBoundingClientRect().height).toBeLessThan(
+      text.clientHeight / 2,
+    )
+    expect(
+      getComputedStyle(host.querySelector('img') as Element).objectFit,
+    ).toBe('fill')
   })
 })
 

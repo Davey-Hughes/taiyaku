@@ -6,6 +6,7 @@
  * blocks run leftward from the right edge, and paged, the pages run down.
  */
 import { type Entry, entryAt } from './book'
+import { paintedBox, pointInSlot } from './notes'
 
 /** How `text` is laid out: set vertically or not, and paged or scrolled. */
 export interface Flow {
@@ -499,7 +500,16 @@ export function show(
         : Math.floor((from + past + (fraction ? 0.5 : 0)) / size)
     setProgress(text, page * size, flow)
   } else if (rect && from !== undefined) {
-    setProgress(text, from + past, flow)
+    // Any place at or before the start of the text's first box is set at 0,
+    // the text's very start, so it moves by no more than the room before
+    // that box. At 0 the browser's scroll anchoring holds still; at an offset
+    // it holds the words on screen, so a figure still loading, which scrolled
+    // has no size until it does, would carry the screen past it as it grows.
+    const first = text.firstElementChild?.getBoundingClientRect()
+    const opens =
+      first !== undefined &&
+      from + past <= along(text, flow, blockStart(flow, first)) + HAIR
+    setProgress(text, opens ? 0 : from + past, flow)
   } else {
     holding(text, block)?.scrollIntoView({ block: 'start' })
   }
@@ -822,6 +832,50 @@ export function pageTurnedBy(text: HTMLElement | null, x: number): number {
   const at = (x - box.left) / box.width
   const on = flow.vertical ? -1 : 1
   return at < 1 / 3 ? -on : at > 2 / 3 ? on : 0
+}
+
+/**
+ * Whether the point `x`, `y` on the screen is on the picture `image` draws:
+ * not on the room `object-fit: contain` leaves around it in its own box, and
+ * not on an image not drawn yet, which has no picture to be on. The picture
+ * is centred in its box, as `paintedBox` reckons it.
+ */
+export function onPicture(
+  image: HTMLImageElement | null,
+  x: number,
+  y: number,
+): boolean {
+  if (!image || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+    return false
+  }
+  const box = image.getBoundingClientRect()
+  const at = pointInSlot(
+    { x: x - box.left, y: y - box.top },
+    paintedBox(
+      { w: image.naturalWidth, h: image.naturalHeight },
+      { w: box.width, h: box.height },
+    ),
+  )
+  return at.x >= 0 && at.x <= 1 && at.y >= 0 && at.y <= 1
+}
+
+/**
+ * Whether a press at `x`, `y` on `figure`, a page image on a paged text,
+ * follows the link its picture is set in. Nothing on it opens it, its page
+ * already sizing it as the comic reader sizes a page, so a press does
+ * something of its own only on a linked one, on its picture (`onPicture`),
+ * and in the page's middle third, since the outer thirds turn the page.
+ */
+export function onPageLink(
+  text: HTMLElement | null,
+  figure: Element,
+  x: number,
+  y: number,
+): boolean {
+  return (
+    pageTurnedBy(text, x) === 0 &&
+    onPicture(figure.querySelector('a[data-link] img'), x, y)
+  )
 }
 
 /**

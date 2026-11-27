@@ -183,6 +183,14 @@ The alignment cache stays keyed as it is; the aligner reads only `text`.
   and in compare and interlinear only in the column of their edition. An
   image opens full size on tap, unless it is set in a link: then the tap
   follows the link, as a tap on a linked word does.
+  *Note, 2026-11-25: narrowed for a page image, a figure that is its EPUB
+  document's whole content, by the owner's rulings of 2026-11-25 (O571, O572
+  and O574, the book image pages PR). Paged outside compare, a page image is
+  drawn on a page of its own, in place of "at their width": scaled down to
+  fit the page always, and up to fit it only while the comic reader's
+  upscale-to-fit is on. A tap on it there opens nothing, and only a tap on
+  its picture, where it is set in a link, follows the link. Where an image
+  still opens full size, the full view follows the same setting.*
 - **Footnotes**: tapping a `note` link opens a popup holding the target block
   (with its marks), a link to go there, and closes on Escape or tapping
   outside. The popup is set under its reference in the top half of the screen

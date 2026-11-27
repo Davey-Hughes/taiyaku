@@ -100,6 +100,11 @@ pub struct Figure {
     pub src: String,
     pub alt: String,
     pub link: Option<ImageLink>,
+    /// Whether it is its spine document's whole content, no block of text or
+    /// other image beside it: a cover or a full-page illustration, which the
+    /// book means as a page of its own rather than a picture between
+    /// paragraphs.
+    pub page: bool,
 }
 
 /// Where a block sits: its spine document, and its place among that
@@ -218,11 +223,16 @@ fn read_archive<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Result<Book
         let (numbered, went) = numbered(walk.out);
         let first = blocks.len();
         let figures_from = figures.len();
+        // Only a lone image: two set together with no text, a logo above a
+        // title graphic say, would each fill a page, parting what the book
+        // shows as one.
+        let alone = numbered.is_empty() && walk.figures.len() == 1;
         // A figure before a block `numbered` took out, or after the last,
         // comes before the next block kept: the next document's first, or
         // the block count at the book's end.
         figures.extend(walk.figures.into_iter().map(|figure| Figure {
             before: first + went.get(figure.before).copied().unwrap_or(numbered.len()),
+            page: alone,
             ..figure
         }));
         anchors.push(Anchors {
@@ -1018,6 +1028,7 @@ impl Walk {
                         src,
                         alt,
                         link,
+                        page: false,
                     });
                 }
             }
