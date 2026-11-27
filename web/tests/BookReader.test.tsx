@@ -1609,21 +1609,148 @@ describe('BookReader', () => {
     expect(host.querySelector('.reader-top-bar')).not.toBeNull()
   })
 
-  it('peeks on a double tap on a paged book’s outer third, turning nothing', async () => {
+  it('turns a paged book’s page at once on a tap on an outer third, not waiting for a second', async () => {
+    paged()
+    const page = paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened()
+    touch(host, { x: 500 }, false)
+    expect(page()).toBe(1)
+    touch(host, { x: 100 }, false)
+    expect(page()).toBe(0)
+  })
+
+  it('turns two pages on a double tap on a paged book’s outer third, and peeks on one in its middle third', async () => {
     paged()
     const page = paging([0, 0, 1, 1, 2, 2])
     const { host } = await opened()
     const on = host.querySelector('.book-text [data-block="1"]')
     touch(host, { on, x: 500, at: 95_000 }, false)
     touch(host, { on, x: 500, at: 95_150 })
-    expect(page()).toBe(0)
+    expect(page()).toBe(2)
+    expect(peeked(host)).toBeNull()
+    touch(host, { on, x: 300, at: 96_000 }, false)
+    touch(host, { on, x: 300, at: 96_150 })
+    expect(page()).toBe(2)
     expect(peeked(host)?.[0]).toBe('1')
-    // A slower one: the page has turned when the second tap lands, and the
-    // bars, which the first tap never touched, stay down.
-    touch(host, { on, x: 500, at: 96_000 })
+  })
+
+  it('takes the click of a tap that turns a paged book’s page, so it presses nothing the new page draws under the finger', async () => {
+    paged()
+    const page = paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened({ edition: 'en', slot: 2 }, linked)
     expect(page()).toBe(1)
-    touch(host, { on, x: 500, at: 96_250 })
+    touch(host, { x: 100 }, false)
+    expect(page()).toBe(0)
+    // A touch screen's click comes after the turn, on the web link the page
+    // turned to has drawn where the finger was.
+    const click = new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      detail: 1,
+    })
+    act(() => {
+      linkIn(host, 0)?.dispatchEvent(click)
+    })
+    expect(click.defaultPrevented).toBe(true)
+  })
+
+  it('takes back the word a double-click on a paged book’s outer third selects, turning two pages', async () => {
+    paged()
+    const page = paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened()
+    const on = host.querySelector('.book-text [data-block="1"]') as Element
+    touch(host, { on, x: 500, at: 97_000 }, false)
+    window.getSelection()?.selectAllChildren(on)
+    touch(host, { on, x: 500, at: 97_150 })
+    expect(page()).toBe(2)
+    expect(window.getSelection()?.isCollapsed).toBe(true)
+  })
+
+  it('lights, compared and paged, the sentence a double tap on an outer third is on, turning nothing', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'compare', paged: true }),
+    )
+    const page = paging([0, 0, 0])
+    const { host } = await opened(undefined, sentenced)
+    const lit = () =>
+      [...host.querySelectorAll('[data-sentence][data-lit]')].map(
+        (el) => el.textContent,
+      )
+    const second = host.querySelector(
+      '[data-pick="left:1"] [data-sentence="2"]',
+    )
+    touch(host, { on: second, x: 500, at: 70_000 }, false)
+    touch(host, { on: second, x: 500, at: 70_150 })
+    expect(page()).toBe(0)
+    expect(lit()).toEqual(['Nobody knew.', '아무도 몰랐다.'])
+  })
+
+  it('turns a compared, paged book’s page when a tap’s wait on an outer third runs out, and a second tap then lights its sentence, the bars left down', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'compare', paged: true }),
+    )
+    const page = paging([0, 0, 0])
+    const { host } = await opened(undefined, sentenced)
+    const lit = () =>
+      [...host.querySelectorAll('[data-sentence][data-lit]')].map(
+        (el) => el.textContent,
+      )
+    const second = () =>
+      host.querySelector('[data-pick="left:1"] [data-sentence="2"]')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    touch(host, { on: second(), x: 500, at: 75_000 }, false)
+    expect(page()).toBe(0)
+    act(() => vi.advanceTimersByTime(200))
+    expect(page()).toBe(1)
+    touch(host, { on: second(), x: 500, at: 75_250 }, false)
+    act(() => vi.advanceTimersByTime(1000))
+    expect(page()).toBe(1)
+    expect(lit()).toEqual(['Nobody knew.', '아무도 몰랐다.'])
     expect(host.querySelector('.reader-top-bar')).toBeNull()
+    vi.useRealTimers()
+  })
+
+  it('waits, paged, on a tap on an outer third with a panel open, closing the panel and turning nothing', async () => {
+    paged()
+    const page = paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened()
+    press('t')
+    expect(host.querySelector('[aria-label="Contents"]')).not.toBeNull()
+    touch(host, { x: 500 })
+    expect(page()).toBe(0)
+    expect(host.querySelector('[aria-label="Contents"]')).toBeNull()
+  })
+
+  it('opens a note, paged, on a tap on its mark in an outer third, turning nothing', async () => {
+    paged()
+    const page = paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened(undefined, book, [highlightOn('en', 1, 0, 3)])
+    touch(host, { on: host.querySelector('mark'), x: 500 })
+    expect(page()).toBe(0)
+    expect(
+      host.querySelector('[role="dialog"][aria-label="Note"]'),
+    ).not.toBeNull()
+  })
+
+  it('shows a hidden translation, paged, on a tap on it in an outer third, turning nothing', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({
+        mode: 'interlinear',
+        hideTranslation: true,
+        paged: true,
+      }),
+    )
+    const page = paging([0, 0, 0])
+    const { host } = await opened(undefined, sentenced)
+    const line = () =>
+      host.querySelector('[data-interlinear="2"]') as HTMLElement
+    expect(line().hasAttribute('data-hidden')).toBe(true)
+    touch(host, { on: line(), x: 500 })
+    expect(page()).toBe(0)
+    expect(line().hasAttribute('data-hidden')).toBe(false)
   })
 
   it('goes back to the block at the top when the window is resized', async () => {

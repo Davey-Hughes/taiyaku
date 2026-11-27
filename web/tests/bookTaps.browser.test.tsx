@@ -1,6 +1,14 @@
 import { act } from 'react'
-import { afterAll, describe, expect, it, onTestFinished, vi } from 'vitest'
-import { page, userEvent } from 'vitest/browser'
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from 'vitest'
+import { cdp, page, userEvent } from 'vitest/browser'
 import { BookReader } from '../src/BookReader'
 import { topOf } from '../src/bookPages'
 import '../src/index.css'
@@ -920,6 +928,742 @@ describe('a figure opened full size', () => {
     await settled()
     expect(full()).toBeNull()
   })
+})
+
+/** Six blocks, each a page with the layout below; the five after the first each one web link, where `linked`. */
+function edged(linked: boolean) {
+  return {
+    title: 'Paged',
+    hub: 'en',
+    editions: {
+      en: {
+        label: 'English',
+        language: 'en',
+        blocks: Array.from({ length: 6 }, (_, i) => {
+          // The first ends on its page, so the page a turn lands on opens
+          // with the next block under the same point.
+          const text =
+            i === 0
+              ? `Block 0 opens. ${WORDS.slice(0, 300)}`
+              : `Block ${i} opens. ${WORDS}`
+          return {
+            text,
+            heading: false,
+            sentences: [[0, text.length]],
+            ...(linked && i > 0
+              ? {
+                  marks: [
+                    {
+                      kind: 'link',
+                      start: 0,
+                      end: text.length,
+                      url: 'https://x.org/',
+                      note: false,
+                    },
+                  ],
+                }
+              : {}),
+          }
+        }),
+      },
+    },
+    alignments: [],
+  }
+}
+
+/** `edged(true)` with a second edition of the same blocks, for Space to swap to. */
+function edgedTwice() {
+  const one = edged(true)
+  return {
+    ...one,
+    editions: {
+      ...one.editions,
+      fr: { ...one.editions.en, label: 'French', language: 'fr' },
+    },
+  }
+}
+
+const textOf = (host: HTMLElement) =>
+  host.querySelector('.book-text') as HTMLElement
+const pageOf = (text: HTMLElement) =>
+  Math.round(text.scrollLeft / text.clientWidth)
+
+/** The page shown as each `pointerup` has bubbled past the reader. */
+const pagesAtUp = (text: HTMLElement) => {
+  const at: number[] = []
+  const heard = () => at.push(pageOf(text))
+  window.addEventListener('pointerup', heard)
+  onTestFinished(() => window.removeEventListener('pointerup', heard))
+  return at
+}
+
+/**
+ * A tap or click on a paged book's outer third turns the page at its
+ * `pointerup`, before the browser sends the press's mouse events and click,
+ * each to whatever is drawn there by then.
+ */
+describe('a tap or click on a paged book’s outer third', () => {
+  // Each block opens a page, so what a turn draws under the point is known.
+  const pages = document.createElement('style')
+  pages.textContent =
+    '.book-text[data-paged] > [data-block] { break-before: column }'
+  // A web link's click that gets through opens no tab from the test.
+  const noTab = (event: Event) => event.preventDefault()
+  beforeAll(() => {
+    document.head.append(pages)
+    document.addEventListener('click', noTab)
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'scroll', paged: true }),
+    )
+  })
+  afterAll(() => {
+    pages.remove()
+    document.removeEventListener('click', noTab)
+    localStorage.removeItem('taiyaku.prefs.book-layout')
+    vi.unstubAllGlobals()
+  })
+
+  /** The right third's middle, level with the first block's first line. */
+  const outerRight = (host: HTMLElement) => {
+    const box = textOf(host).getBoundingClientRect()
+    const line = (
+      host.querySelector('.book-text [data-block="0"]') as Element
+    ).getClientRects()[0]
+    return {
+      x: box.left + (box.width * 5) / 6,
+      y: line.top + Math.min(line.height, 20) / 2,
+    }
+  }
+
+  /** What was selected as each `pointerup` began, before the reader heard it. */
+  const selectedAtUp = () => {
+    const at: string[] = []
+    const heard = () => at.push(window.getSelection()?.toString() ?? '')
+    window.addEventListener('pointerup', heard, true)
+    onTestFinished(() => window.removeEventListener('pointerup', heard, true))
+    return at
+  }
+
+  /**
+   * A mouse's double-click at a point: `mouse` presses with a click count of
+   * 1, and the second press's count of 2 is what has Chromium select the word
+   * under the pointer.
+   */
+  const doubleClickAt = async (x: number, y: number) => {
+    await mouse.moveTo(x, y)
+    const box = (window.frameElement as Element).getBoundingClientRect()
+    const at = {
+      x: box.left + (x * box.width) / window.innerWidth,
+      y: box.top + (y * box.height) / window.innerHeight,
+    }
+    for (const clickCount of [1, 2]) {
+      for (const type of ['mousePressed', 'mouseReleased'] as const) {
+        await cdp().send('Input.dispatchMouseEvent', {
+          type,
+          ...at,
+          button: 'left',
+          buttons: type === 'mousePressed' ? 1 : 0,
+          clickCount,
+          pointerType: 'mouse',
+        })
+      }
+    }
+  }
+
+  const barsUp = (host: HTMLElement) =>
+    host.querySelector('.reader-top-bar') !== null
+
+  /** Whether focus is in either bar. */
+  const focusInBars = () =>
+    document.activeElement?.closest('.reader-top-bar, .reader-bottom-bar') !=
+    null
+
+  /**
+   * A mouse's click in the middle third, which brings the bars up and leaves
+   * the test's frame focused, so real keys reach the reader; then a wait past
+   * the double-tap window, so the next tap is not the second of a double.
+   */
+  const barsByClick = async (host: HTMLElement) => {
+    const box = textOf(host).getBoundingClientRect()
+    const { y } = outerRight(host)
+    await act(async () => {
+      await mouse.moveTo(box.left + box.width / 2, y)
+      await mouse.press()
+      await mouse.release()
+    })
+    await until(() => barsUp(host))
+    await act(() => new Promise((done) => setTimeout(done, 300)))
+  }
+
+  /**
+   * Something in the test's frame focused and gone again, so real keys reach
+   * the reader while focus is on the page's body.
+   */
+  const keysToFrame = () => {
+    const stop = document.createElement('button')
+    document.body.append(stop)
+    stop.focus()
+    stop.remove()
+  }
+
+  /**
+   * As `outerRight`, but while the top bar is up on the middle of the first
+   * block's first line below it: a point between two lines is on the
+   * paragraph and no link, so a test there could not see a link take focus.
+   */
+  const outerRightBelowBars = (host: HTMLElement) => {
+    const point = outerRight(host)
+    const bar = host.querySelector('.reader-top-bar')?.getBoundingClientRect()
+    if (!bar) return point
+    const words = host.querySelector(
+      '.book-text [data-block="0"] [data-sentence]',
+    ) as Element
+    const line = [...words.getClientRects()].find(
+      (box) => box.width > 0 && box.top > bar.bottom && box.right > point.x,
+    )
+    if (!line) throw new Error('no line of the first block below the top bar')
+    return { x: point.x, y: (line.top + line.bottom) / 2 }
+  }
+
+  it('leaves a mouse’s click to the page turned from, not to the web link the turn drew under the pointer', async () => {
+    const host = await reader(edged(true))
+    const text = textOf(host)
+    const p = outerRight(host)
+    const before = document.elementFromPoint(p.x, p.y)
+    expect(before?.closest('.book-text')).not.toBeNull()
+    expect(before?.closest('a')).toBeNull()
+    const ups = pagesAtUp(text)
+    const { reached } = clicks()
+    await act(async () => {
+      await mouse.moveTo(p.x, p.y)
+      await mouse.press()
+      await mouse.release()
+    })
+    await settled()
+    expect(ups).toEqual([1])
+    expect(document.elementFromPoint(p.x, p.y)?.closest('a')).not.toBeNull()
+    // THE STATE THIS TEST NAMES: the click reached what was under the
+    // pointer when it was pressed.
+    expect(reached).toEqual([before])
+  })
+
+  it('takes a finger’s tap’s click, which Chromium aims at the web link the turn drew under the finger', async () => {
+    const host = await reader(edged(true))
+    const text = textOf(host)
+    const p = outerRight(host)
+    const ups = pagesAtUp(text)
+    const { aimed, reached } = clicks()
+    await tapAt(p.x, p.y)
+    await settled()
+    expect(ups).toEqual([1])
+    expect(aimed).toHaveLength(1)
+    expect((aimed[0] as Element).closest('a')).not.toBeNull()
+    // THE STATE THIS TEST NAMES: the click reached nothing.
+    expect(reached).toEqual([])
+  })
+
+  it('turns two pages on a mouse’s double-click, taking back the word its second press selected', async () => {
+    const host = await reader(edged(false))
+    const text = textOf(host)
+    const p = outerRight(host)
+    const ups = pagesAtUp(text)
+    const selected = selectedAtUp()
+    await act(() => doubleClickAt(p.x, p.y))
+    await settled()
+    expect(ups).toEqual([1, 2])
+    expect(selected[1]).not.toBe('')
+    expect(window.getSelection()?.toString()).toBe('')
+  })
+
+  it('turns two pages on a finger’s double tap 150 ms apart, selecting nothing and sending no click on', async () => {
+    const host = await reader(edged(false))
+    const text = textOf(host)
+    const p = outerRight(host)
+    const ups = pagesAtUp(text)
+    const { reached } = clicks()
+    const first = Date.now() / 1000
+    await tapAt(p.x, p.y, first)
+    await tapAt(p.x, p.y, first + 0.15)
+    await settled()
+    expect(ups).toEqual([1, 2])
+    expect(window.getSelection()?.toString()).toBe('')
+    expect(reached).toEqual([])
+  })
+
+  it('leaves focus where a press on the text leaves it, not on the web link the turn drew under a finger’s tap', async () => {
+    const host = await reader(edged(true))
+    const p = outerRight(host)
+    expect(document.activeElement).toBe(document.body)
+    await tapAt(p.x, p.y)
+    await settled()
+    expect(pageOf(textOf(host))).toBe(1)
+    expect(document.elementFromPoint(p.x, p.y)?.closest('a')).not.toBeNull()
+    // THE STATE THIS TEST NAMES: focus is on no link.
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('takes focus a key put in the bars out of them when a finger’s tap turns the page, so Escape leaves the book', async () => {
+    const onLeave = vi.fn()
+    const host = await reader(edged(false), onLeave)
+    await barsByClick(host)
+    for (let i = 0; i < 12 && !focusInBars(); i++) {
+      await act(async () => {
+        await userEvent.tab()
+      })
+    }
+    expect(focusInBars()).toBe(true)
+    const p = outerRightBelowBars(host)
+    await tapAt(p.x, p.y)
+    await settled()
+    expect(pageOf(textOf(host))).toBe(1)
+    // THE STATE THIS TEST NAMES: focus left the bars, as a press on the
+    // text takes it from them.
+    expect(document.activeElement).toBe(document.body)
+    await act(async () => {
+      await userEvent.keyboard('{Escape}')
+    })
+    await settled()
+    expect(onLeave).toHaveBeenCalledTimes(1)
+  })
+
+  it('swaps editions on Space after a finger’s tap turned to a page with a web link under the finger', async () => {
+    const host = await reader(edgedTwice())
+    keysToFrame()
+    const p = outerRight(host)
+    await tapAt(p.x, p.y)
+    await settled()
+    expect(pageOf(textOf(host))).toBe(1)
+    expect(document.elementFromPoint(p.x, p.y)?.closest('a')).not.toBeNull()
+    expect(textOf(host).lang).toBe('en')
+    await act(async () => {
+      await userEvent.keyboard(' ')
+    })
+    await settled()
+    // THE STATE THIS TEST NAMES: Space reached the reader.
+    expect(textOf(host).lang).toBe('fr')
+  })
+})
+
+/** `drawn` with a second edition of the same blocks, for a double tap to peek at. */
+function withFrench<T extends { editions: { en: object } }>(drawn: T) {
+  return {
+    ...drawn,
+    editions: {
+      ...drawn.editions,
+      fr: { ...drawn.editions.en, label: 'French', language: 'fr' },
+    },
+  }
+}
+
+/**
+ * A cover, a page image set in a web link where `linked`, before three
+ * blocks each one web link, so the page after the cover draws a link wherever
+ * its words are.
+ */
+function coverOverLinks(linked: boolean) {
+  return {
+    title: 'Covered',
+    hub: 'en',
+    editions: {
+      en: {
+        label: 'English',
+        language: 'en',
+        blocks: Array.from({ length: 3 }, (_, i) => {
+          const text = `Block ${i} opens. ${WORDS}`
+          return {
+            text,
+            heading: false,
+            sentences: [[0, text.length]],
+            marks: [
+              {
+                kind: 'link',
+                start: 0,
+                end: text.length,
+                url: 'https://x.org/',
+                note: false,
+              },
+            ],
+          }
+        }),
+        figures: [
+          {
+            before: 0,
+            image: COVER,
+            alt: 'the cover',
+            page: true,
+            ...(linked ? { link: { url: 'https://y.org/', note: false } } : {}),
+          },
+        ],
+      },
+    },
+    alignments: [],
+  }
+}
+
+/** The middle of the first line of block 0's words, on whichever page they are drawn. */
+function firstLineY(host: HTMLElement): number {
+  const words = host.querySelector(
+    '.book-text [data-block="0"] [data-sentence]',
+  ) as Element
+  const line = [...words.getClientRects()].find((box) => box.width > 0)
+  if (!line) throw new Error('block 0 draws no line')
+  return (line.top + line.bottom) / 2
+}
+
+/**
+ * A paged book's cover, a page image, takes a tap as a page of words does:
+ * an outer third turns the page at the tap's `pointerup`, and the middle
+ * third shows or hides the bars after the wait a double tap needs, unless the
+ * tap is on the picture of a cover set in a link, which follows the link. The
+ * third a point is in is `pageTurnedBy`'s for the link as for the turn.
+ */
+describe('a tap on a paged book’s cover, as on a page of words', () => {
+  afterAll(() => vi.unstubAllGlobals())
+
+  const barsUp = (host: HTMLElement) =>
+    host.querySelector('.reader-top-bar') !== null
+  const full = (host: HTMLElement) =>
+    host.querySelector('dialog.book-figure-full')
+  const outerRightOf = (host: HTMLElement) => {
+    const across = textOf(host).getBoundingClientRect()
+    return { x: across.left + (across.width * 5) / 6, y: firstLineY(host) }
+  }
+  /** The middle third's middle across, on the cover's picture or the first line of words. */
+  const middleThirdOf = (host: HTMLElement, onCover: boolean) => {
+    const across = textOf(host).getBoundingClientRect()
+    const x = across.left + across.width / 2
+    if (!onCover) return { x, y: firstLineY(host) }
+    const { picture } = coverOf(host)
+    return { x, y: picture.top + picture.height / 2 }
+  }
+  const hrefsOf = (targets: EventTarget[]) =>
+    targets.map((t) => (t as Element).closest('a')?.getAttribute('href'))
+  const pause = (ms: number) =>
+    act(() => new Promise((done) => setTimeout(done, ms)))
+
+  it.each([
+    ['unlinked', false],
+    ['set in a web link', true],
+  ] as const)(
+    'turns the page from a finger’s tap on an outer third of a cover %s at once, taking its click from the link the next page drew there and leaving that link unfocused',
+    async (_, linked) => {
+      pagedWith(true)
+      const host = await reader(coverOverLinks(linked))
+      const text = textOf(host)
+      const p = outerRightOf(host)
+      expect(
+        document.elementFromPoint(p.x, p.y)?.closest('[data-page-image]'),
+      ).not.toBeNull()
+      expect(document.activeElement).toBe(document.body)
+      const ups = pagesAtUp(text)
+      const { aimed, reached } = clicks()
+      const followed = linksFollowed()
+      await tapAt(p.x, p.y)
+      await settled()
+      // THE STATE THIS TEST NAMES: the page turned by the tap's pointerup,
+      // and its click, aimed at the web link the next page drew under the
+      // finger, reached nothing and left that link without focus.
+      expect(ups).toEqual([1])
+      expect(hrefsOf(aimed)).toEqual(['https://x.org/'])
+      expect([reached, followed]).toEqual([[], []])
+      expect(document.activeElement).toBe(document.body)
+      await pause(300)
+      expect([pageOf(text), barsUp(host), full(host)]).toEqual([1, false, null])
+    },
+  )
+
+  it('turns the page from a mouse’s click on an outer third of a cover set in a web link at once, following that link no more than the next page’s, and leaves it unfocused', async () => {
+    pagedWith(true)
+    const host = await reader(coverOverLinks(true))
+    const text = textOf(host)
+    const p = outerRightOf(host)
+    expect(
+      document.elementFromPoint(p.x, p.y)?.closest('a')?.getAttribute('href'),
+    ).toBe('https://y.org/')
+    const ups = pagesAtUp(text)
+    const { aimed, reached } = clicks()
+    const followed = linksFollowed()
+    await act(async () => {
+      await mouse.moveTo(p.x, p.y)
+      await mouse.press()
+      await mouse.release()
+    })
+    await settled()
+    // THE STATE THIS TEST NAMES: the click went to the cover's link the mouse
+    // pressed on, and reached nothing; the focus the press gave that link,
+    // now a page back, is gone.
+    expect(ups).toEqual([1])
+    expect(hrefsOf(aimed)).toEqual(['https://y.org/'])
+    expect([reached, followed]).toEqual([[], []])
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it.each([
+    ['words', false],
+    ['a cover', true],
+  ] as const)(
+    'shows the bars from a finger’s tap in the middle third of a page of %s only after the wait a double tap needs, turning nothing and opening nothing',
+    async (_, onCover) => {
+      pagedWith(true)
+      const host = await reader(onCover ? covered : edged(false))
+      const text = textOf(host)
+      const at = middleThirdOf(host, onCover)
+      const heard: { at: number; page: number; bars: boolean }[] = []
+      const onUp = () =>
+        heard.push({
+          at: performance.now(),
+          page: pageOf(text),
+          bars: barsUp(host),
+        })
+      window.addEventListener('pointerup', onUp)
+      onTestFinished(() => window.removeEventListener('pointerup', onUp))
+      await tapAt(at.x, at.y)
+      await until(() => barsUp(host) || full(host) !== null)
+      const waited = performance.now() - heard[0].at
+      await settled()
+      // THE STATE THIS TEST NAMES: nothing done at the pointerup, and the
+      // bars shown, the page kept and nothing opened, once most of the
+      // reader's 200 ms wait had passed.
+      expect(heard.map(({ page, bars }) => [page, bars])).toEqual([[0, false]])
+      expect([pageOf(text), barsUp(host), full(host)]).toEqual([0, true, null])
+      expect(waited).toBeGreaterThanOrEqual(180)
+    },
+  )
+
+  it.each([
+    ['words', false],
+    ['a cover', true],
+  ] as const)(
+    'on a finger’s double tap in the middle third of a page of %s, leaves the bars as they were, turns and opens nothing, and peeks at the block tapped, a cover being in none',
+    async (_, onCover) => {
+      pagedWith(true)
+      const host = await reader(withFrench(onCover ? covered : edged(false)))
+      const text = textOf(host)
+      const at = middleThirdOf(host, onCover)
+      const ups = pagesAtUp(text)
+      const first = Date.now() / 1000
+      await tapAt(at.x, at.y, first)
+      await tapAt(at.x, at.y, first + 0.15)
+      await pause(400)
+      await settled()
+      const peek = host.querySelector('.book-peek')
+      // THE STATE THIS TEST NAMES: the second tap stopped or undid the
+      // first's bars and peeked at block 0 of the words; on the cover there
+      // is no block to peek at.
+      expect([
+        ups,
+        barsUp(host),
+        full(host),
+        pageOf(text),
+        peek?.closest('[data-block]')?.getAttribute('data-block') ?? null,
+      ]).toEqual([[0, 0], false, null, 0, onCover ? null : '0'])
+    },
+  )
+
+  it.each([
+    ['off', false],
+    ['on', true],
+  ] as const)(
+    'with upscale-to-fit %s, follows the link of a cover set in one from a finger’s tap on its picture in the middle third, turning nothing and leaving the bars',
+    async (_, upscaleToFit) => {
+      pagedWith(upscaleToFit)
+      const host = await reader(linkedCovered)
+      const text = textOf(host)
+      const { image, picture, middle } = coverOf(host)
+      const at = {
+        x: (middle.left + middle.right) / 2,
+        y: picture.top + picture.height / 2,
+      }
+      expect(document.elementFromPoint(at.x, at.y)).toBe(image)
+      const ups = pagesAtUp(text)
+      const followed = linksFollowed()
+      await tapAt(at.x, at.y)
+      await pause(300)
+      await settled()
+      // THE STATE THIS TEST NAMES: the link followed, at the page it was on.
+      expect([ups, followed]).toEqual([[0], [image]])
+      expect([pageOf(text), barsUp(host), full(host)]).toEqual([0, false, null])
+    },
+  )
+
+  it('takes a finger’s tap on a linked cover’s picture just inside the middle third for its link, and one just past it for the page, turned at once', async () => {
+    pagedWith(true)
+    const host = await reader(linkedCovered)
+    const text = textOf(host)
+    const { image, picture, middle } = coverOf(host)
+    const y = picture.top + picture.height / 2
+    const inside = { x: middle.right - 2, y }
+    const past = { x: middle.right + 2, y }
+    // THE STATE THIS TEST NAMES: both points are on the picture, either side
+    // of the line between the page's middle and right thirds.
+    expect([
+      picture.left < inside.x && past.x < picture.right,
+      document.elementFromPoint(inside.x, inside.y) === image,
+      document.elementFromPoint(past.x, past.y) === image,
+    ]).toEqual([true, true, true])
+    const ups = pagesAtUp(text)
+    const followed = linksFollowed()
+    await tapAt(inside.x, inside.y)
+    await settled()
+    expect([ups, followed]).toEqual([[0], [image]])
+    await tapAt(past.x, past.y)
+    await settled()
+    expect([ups, followed]).toEqual([[0, 1], [image]])
+    await pause(300)
+    expect([pageOf(text), barsUp(host), full(host)]).toEqual([1, false, null])
+  })
+})
+
+/**
+ * A tap a paged book's cover takes, beside the picture of a cover set in a
+ * web link, leaves focus where a press on words leaves it, on the body,
+ * whatever held it: the cover's link, a key's place in the bars, or a web
+ * link a page away. So the keys after it are the reader's, finger, mouse or
+ * pen, in the middle third as in an outer one.
+ */
+describe('focus after a tap a paged book’s linked cover takes', () => {
+  afterAll(() => vi.unstubAllGlobals())
+
+  const barsUp = (host: HTMLElement) =>
+    host.querySelector('.reader-top-bar') !== null
+  const focusInTopBar = () =>
+    document.activeElement?.closest('.reader-top-bar') != null
+  const pause = (ms: number) =>
+    act(() => new Promise((done) => setTimeout(done, ms)))
+  /** Above the cover's picture, in its link, in the middle or the right third across. */
+  const besideIn = (host: HTMLElement, third: 'middle' | 'outer') => {
+    const { sheet, picture, middle } = coverOf(host)
+    const across = textOf(host).getBoundingClientRect()
+    return {
+      x:
+        third === 'middle'
+          ? (middle.left + middle.right) / 2
+          : across.left + (across.width * 5) / 6,
+      y: (sheet.top + picture.top) / 2,
+    }
+  }
+  const tapBy = async (
+    by: 'finger' | 'mouse' | 'pen',
+    x: number,
+    y: number,
+  ) => {
+    if (by === 'finger') return tapAt(x, y)
+    const pointer = by === 'mouse' ? mouse : pen
+    await act(async () => {
+      await pointer.moveTo(x, y)
+      await pointer.press()
+      await pointer.release()
+    })
+  }
+  const inCoversLink = (host: HTMLElement, at: { x: number; y: number }) =>
+    coverOf(host)
+      .image.closest('a')
+      ?.contains(document.elementFromPoint(at.x, at.y)) ?? false
+
+  const cases = [
+    ['finger', 'middle'],
+    ['finger', 'outer'],
+    ['mouse', 'middle'],
+    ['mouse', 'outer'],
+    ['pen', 'middle'],
+    ['pen', 'outer'],
+  ] as const
+
+  it.each(cases)(
+    'takes focus a key put in the top bar out of it at a %s’s tap beside the picture in the %s third, so Escape leaves the book',
+    async (by, third) => {
+      pagedWith(true)
+      const onLeave = vi.fn()
+      const host = await reader(withFrench(coverOverLinks(true)), onLeave)
+      const text = textOf(host)
+      // The bars up from a mouse's click, then a key back from the cover,
+      // where the click left the browser's place, into the top bar.
+      const middle = besideIn(host, 'middle')
+      await act(async () => {
+        await mouse.moveTo(middle.x, middle.y)
+        await mouse.press()
+        await mouse.release()
+      })
+      await until(() => barsUp(host))
+      await pause(350)
+      for (let i = 0; i < 12 && !focusInTopBar(); i++) {
+        await act(async () => {
+          await userEvent.tab({ shift: true })
+        })
+      }
+      const at = besideIn(host, third)
+      // THE STATE THIS TEST NAMES: a key's focus in the top bar, and the tap
+      // beside the cover's picture, in its link.
+      expect([focusInTopBar(), inCoversLink(host, at)]).toEqual([true, true])
+      await tapBy(by, at.x, at.y)
+      await settled()
+      expect(document.activeElement).toBe(document.body)
+      await until(() => barsUp(host) === (third === 'outer'))
+      expect(pageOf(text)).toBe(third === 'outer' ? 1 : 0)
+      await act(async () => {
+        await userEvent.keyboard('{Escape}')
+      })
+      await settled()
+      expect(onLeave).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it.each(cases)(
+    'takes focus from a web link a tap followed a page on, at a %s’s tap beside the picture in the %s third, so Space swaps editions and Enter follows nothing',
+    async (by, third) => {
+      pagedWith(true)
+      const host = await reader(withFrench(coverOverLinks(true)))
+      const text = textOf(host)
+      // Real keys reach the frame once something in it has had focus.
+      const stop = document.createElement('button')
+      document.body.append(stop)
+      stop.focus()
+      stop.remove()
+      await act(async () => {
+        await userEvent.keyboard('{ArrowRight}')
+      })
+      await settled()
+      const across = text.getBoundingClientRect()
+      const followed = linksFollowed()
+      await tapAt(across.left + across.width / 2, firstLineY(host))
+      await pause(350)
+      await act(async () => {
+        await userEvent.keyboard('{ArrowLeft}')
+      })
+      await settled()
+      const at = besideIn(host, third)
+      const focused = document.activeElement as Element
+      // THE STATE THIS TEST NAMES: the cover shown with the bars down, its
+      // link under the tap, and focus on the web link the first tap
+      // followed, now a page on.
+      expect([
+        pageOf(text),
+        barsUp(host),
+        inCoversLink(host, at),
+        focused.closest('[data-block]')?.getAttribute('data-block'),
+        focused.closest('a')?.getAttribute('href'),
+        followed.map((t) => (t as Element).closest('a')?.getAttribute('href')),
+      ]).toEqual([0, false, true, '0', 'https://x.org/', ['https://x.org/']])
+      await tapBy(by, at.x, at.y)
+      await pause(300)
+      await settled()
+      expect(document.activeElement).toBe(document.body)
+      expect([pageOf(text), barsUp(host)]).toEqual(
+        third === 'outer' ? [1, false] : [0, true],
+      )
+      await act(async () => {
+        await userEvent.keyboard(' ')
+      })
+      await settled()
+      expect(text.lang).toBe('fr')
+      await act(async () => {
+        await userEvent.keyboard('{Enter}')
+      })
+      await settled()
+      expect(followed.slice(1)).toEqual([])
+    },
+  )
 })
 
 /** Real time, a frame at a time, until `check` holds; throws if it never does. */

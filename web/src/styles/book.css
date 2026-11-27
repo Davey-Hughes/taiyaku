@@ -14,6 +14,14 @@
   font-family: ui-serif, Georgia, serif;
   font-size: var(--book-text-size);
   line-height: var(--book-line-spacing);
+  /* Takes away the browser's double-tap zoom and nothing else: a double tap
+   * on the text peeks, and a phone would zoom the page as well. Paged and
+   * outside compare, a tap on an outer third turns the page at once where
+   * nothing else takes it, so a quick second tap is a tap on the new page
+   * (O596); with a panel open, or on a note's mark or a hidden translation,
+   * the tap waits and the two peek. Pinch and panning, and so scrolling, stay
+   * the browser's, as on the comic reader's page area (style pass §9.2). */
+  touch-action: manipulation;
 }
 
 .book-text[data-typeface="sans"] {

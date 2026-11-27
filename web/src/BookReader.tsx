@@ -2146,13 +2146,10 @@ export function BookReader({
           if (pagesOwn) {
             // A mousedown after this, as a finger's is, or before it, as a
             // mouse's is, would leave focus on that link, and Enter and Space
-            // with it: one after is held, and the focus one before gave the
-            // link is taken back. No other element's focus is taken here.
+            // with it. So one after is held, and focus leaves whatever holds
+            // it, a link a page away too, as a press on words would take it.
             takeTapClick(event, { keepFocus: true, mouseToo: true })
-            const focused = document.activeElement
-            if (focused instanceof HTMLElement && pageImage.contains(focused)) {
-              focused.blur()
-            }
+            ;(document.activeElement as HTMLElement | null)?.blur()
           }
           // An image set in a link is the link's, below.
           const tapped =
@@ -2206,7 +2203,8 @@ export function BookReader({
             ? target.closest<HTMLElement>('[data-interlinear]')?.dataset
                 .interlinear
             : undefined
-          // A tap acts after `TAP_MS`; a second tap before then stops it,
+          // A tap that neither looks a word up nor turns a page at once (both
+          // below) acts after `TAP_MS`; a second tap before then stops it,
           // and one later in `DOUBLE_TAP_MS` undoes it. Either peeks, taking
           // back what the browser selected for a double or triple click.
           const last = lastTap.current
@@ -2260,6 +2258,29 @@ export function BookReader({
             return
           }
           const page = pageTurnedBy(text.current, event.clientX)
+          // A tap in a page's outer third turns it at once rather than after
+          // `TAP_MS`, a wait every turn would feel. So it is not the first of
+          // a double tap either: a second quick tap there is a tap of its own
+          // on the new page, turning it again unless what the turn drew under
+          // the point takes a tap, such as a link or a figure (O596), and a
+          // peek is a double tap in the middle third. Compared, it waits, so
+          // a sentence double-tapped in any column lights what each has for it.
+          if (page !== 0 && !comparing && !panel && !noted && !hiddenLine) {
+            lastTap.current = undefined
+            window.clearTimeout(tapWait.current)
+            tapWait.current = undefined
+            // A double-click's second click there, where it turns the page
+            // again, has selected a word on the page it turns from.
+            window.getSelection()?.removeAllRanges()
+            turn(text.current, page)
+            // A finger's mousedown comes after the turn, onto what the new
+            // page drew under it, where a web link would take focus and
+            // Enter and Space with it. So it is held, and focus leaves what
+            // holds it as a press on the text would.
+            takeTapClick(event, { keepFocus: true })
+            ;(document.activeElement as HTMLElement | null)?.blur()
+            return
+          }
           lastTap.current = {
             at: event.timeStamp,
             toggledBars: !panel && !noted && !hiddenLine && page === 0,

@@ -65,6 +65,17 @@ There is one sensible way to find the word: the server matches the longest prefi
     its picture, where it is set in a link, follows the link.*
   - A tap on empty space, or on whitespace or punctuation, does what it does today.
   - A double tap still peeks.
+    *Note, 2026-11-25: narrowed for a paged book's outer thirds by the book
+    reader edge taps PR (O579). It is that PR's own change, not an owner
+    ruling, and is merged only if the owner merges the PR. Paged outside
+    compare, a tap on an outer third turns the page at once where nothing
+    else claims it, such as a link, a note's mark, a hidden translation or an
+    open panel, so a double tap there turns the page rather than peeking: its
+    second tap is a tap of its own on the page turned to, turning it again
+    unless something drawn under the point takes it, such as a link or a
+    figure (O596). A peek is a double tap in the middle third. Compared, a
+    tap there still waits, so a sentence double-tapped in any column lights
+    what each edition has for it (O591).*
 - **Finding the word:**
   - Convert the tap point to a character offset in the block's own text through `document.caretPositionFromPoint` (or `caretRangeFromPoint`) and the `wordNodes` count `selectionIn` uses, so offsets are block-text offsets.
   - Japanese edition (`Edition.language` starts with `ja`): send the next 16 characters to `/at`, and the word is `[at, at + length)`. `length` 0 means "Not in the dictionary" for the tapped character alone.

@@ -92,6 +92,22 @@ describe('book.css', () => {
     expect(getComputedStyle(first).textIndent).toBe('0px')
     expect(getComputedStyle(second).textIndent).not.toBe('0px')
   })
+
+  it('takes the browser’s double-tap zoom, and only that, from the text, paged or scrolled', () => {
+    const host = mount(
+      <div className="reader">
+        <div className="book-text" data-paged="">
+          <p>One.</p>
+        </div>
+        <div className="book-text">
+          <p>One.</p>
+        </div>
+      </div>,
+    )
+    const [paged, scrolled] = host.querySelectorAll('.book-text')
+    expect(getComputedStyle(paged).touchAction).toBe('manipulation')
+    expect(getComputedStyle(scrolled).touchAction).toBe('manipulation')
+  })
 })
 
 describe('book.css on an image set in a link', () => {
