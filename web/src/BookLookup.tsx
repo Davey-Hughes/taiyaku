@@ -26,7 +26,11 @@ export function LookupPanel({
   looked: Looked
   /** Whether a tap goes through the panel to the text under it. */
   tapsPass?: boolean
-  onSave: (entry: DictionaryEntry) => void
+  /**
+   * Keep `entry` on the word; none until the notes have been read, which a
+   * word saved before would be written over by.
+   */
+  onSave?: (entry: DictionaryEntry) => void
   onClose: () => void
 }) {
   const panelRef = useRef<HTMLDivElement>(null)
@@ -71,7 +75,8 @@ export function LookupPanel({
             <button
               type="button"
               className="reader-button"
-              onClick={() => onSave(entry)}
+              disabled={!onSave}
+              onClick={() => onSave?.(entry)}
             >
               Save word
             </button>

@@ -87,7 +87,7 @@ function pastStart(text: HTMLElement, flow: Flow) {
  * reading axis is past the screen's start, as paged its right edge is past
  * the page's left. Found by halving, since the children run in order.
  */
-function topChild(text: HTMLElement): HTMLElement | undefined {
+export function topChild(text: HTMLElement): HTMLElement | undefined {
   const past = pastStart(text, flowOf(text))
   const children = text.children
   let lo = 0
@@ -203,11 +203,11 @@ export interface Anchor {
    * Scrolled, how far into its character, figure or compared row the screen
    * starts, or paged, how far into its compared row, a row being the one box
    * that runs on over pages: a fraction of that box's length along the reading
-   * axis. Placed again, that point goes back to the screen's start, so a line
-   * or a figure part scrolled past stays as it was rather than snapping to its
-   * start. It means nothing against a box of another kind or size, so only a
-   * docked panel's set-in and the re-place after an image loads carry it: the
-   * rest place the anchor `whole`.
+   * axis. Placed again, that point is the screen's start, so a line or figure
+   * part scrolled past stays so. Against a box of another kind or size it
+   * means nothing, so only a docked panel's set-in, the re-place after an
+   * image loads and Back carry it, Back only while compared and paged, where
+   * a `read` is placed before it at any size: the rest place it `whole`.
    */
   into?: number
   /**
@@ -723,7 +723,15 @@ function charRect(words: HTMLElement, at: number): DOMRect | undefined {
  * its two paddings.
  */
 function pageOf(text: HTMLElement, block: number, line: 'first' | 'last') {
-  const held = holding(text, block)
+  return pageHolding(text, holding(text, block), line)
+}
+
+/** The page child `held` of `text` starts on, or ends on, by `line`. */
+function pageHolding(
+  text: HTMLElement,
+  held: Element | undefined,
+  line: 'first' | 'last',
+) {
   const flow = flowOf(text)
   const size = pageSize(text, flow)
   if (!held || size <= 0) return 0
@@ -762,7 +770,24 @@ export function pagesOf(
   const entry = entries[reading]
   if (!entry) return { at: at + 1, of }
   const next = entries[reading + 1]
-  const first = pageOf(text, entry.block, 'first')
+  // A chapter opens with the pages of figures alone before its heading, a
+  // cover, a frontispiece or maps, as the place on one names the heading's
+  // block: counted from the heading, their pages would be the chapter's 0th
+  // and before. A page that also holds the text before the figures is that
+  // text's, as the place there names its block, so the count goes back no
+  // further than the page after the one that text ends on.
+  const heading = holding(text, entry.block)
+  let opening = heading
+  while (opening?.previousElementSibling?.hasAttribute('data-figure')) {
+    opening = opening.previousElementSibling
+  }
+  const before = opening?.previousElementSibling
+  let first = pageHolding(text, heading, 'first')
+  if (opening !== heading) {
+    first = before
+      ? Math.min(first, pageHolding(text, before, 'last') + 1)
+      : pageHolding(text, opening, 'first')
+  }
   const last = next ? pageOf(text, next.block - 1, 'last') : of - 1
   return {
     at: at + 1,

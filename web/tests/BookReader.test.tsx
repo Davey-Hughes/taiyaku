@@ -467,6 +467,21 @@ const three = {
   ],
 }
 
+/** `book` with English a short heading and a paragraph of 100 characters. */
+const headed = {
+  ...book,
+  editions: {
+    ...book.editions,
+    en: {
+      ...book.editions.en,
+      blocks: [
+        { text: 'CHAPTER ONE', heading: true, sentences: [[0, 11]] },
+        { text: 'x'.repeat(100), heading: false, sentences: [[0, 100]] },
+      ],
+    },
+  },
+}
+
 const peeked = (host: HTMLElement) => {
   const peek = host.querySelector<HTMLElement>('.book-peek')
   return (
@@ -1087,6 +1102,99 @@ describe('BookReader', () => {
     expect(litSentences(host)).toEqual([])
   })
 
+  it('moves nothing while reading aloud, compared or not, every sentence read being on the screen', async () => {
+    for (const mode of ['scroll', 'compare']) {
+      localStorage.setItem(
+        'taiyaku.prefs.book-layout',
+        JSON.stringify({ mode }),
+      )
+      const speech = voices([{ lang: 'en-GB', name: 'Daniel' }])
+      const { host } = await opened(undefined, sentenced)
+      // The whole book on one screen, every character of it measured there.
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+        function (this: Element) {
+          return {
+            top: 0,
+            bottom: this.classList.contains('book-text') ? 800 : 100,
+            left: 0,
+            right: 600,
+          } as DOMRect
+        },
+      )
+      Object.defineProperty(Range.prototype, 'getClientRects', {
+        configurable: true,
+        value: () => [{ top: 50, bottom: 70, left: 10, right: 20 }],
+      })
+      onTestFinished(() => {
+        Reflect.deleteProperty(Range.prototype, 'getClientRects')
+      })
+      const text = host.querySelector('.book-text') as HTMLElement
+      text.scrollTo = vi.fn() as HTMLElement['scrollTo']
+      vi.mocked(Element.prototype.scrollIntoView).mockClear()
+      press('r')
+      speech.starts()
+      for (let i = 0; i < 2; i++) {
+        speech.ends()
+        speech.starts()
+      }
+      expect(speech.spoken.map((u) => u.text)).toEqual([
+        'CHAPTER ONE',
+        'Who asked.',
+        'Nobody knew.',
+      ])
+      expect(vi.mocked(text.scrollTo)).not.toHaveBeenCalled()
+      expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled()
+      press('r')
+      rerender(<div />)
+    }
+  })
+
+  it('moves the text, compared, to each sentence read aloud that is off the screen', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'compare' }),
+    )
+    const speech = voices([{ lang: 'en-GB', name: 'Daniel' }])
+    const { host } = await opened(undefined, sentenced)
+    // Every character measured below the screen, which ends at 800.
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        return {
+          top: 0,
+          bottom: this.classList.contains('book-text') ? 800 : 100,
+          left: 0,
+          right: 600,
+        } as DOMRect
+      },
+    )
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [{ top: 900, bottom: 920, left: 10, right: 20 }],
+    })
+    onTestFinished(() => {
+      Reflect.deleteProperty(Range.prototype, 'getClientRects')
+    })
+    const text = host.querySelector('.book-text') as HTMLElement
+    text.scrollTo = vi.fn() as HTMLElement['scrollTo']
+    vi.mocked(Element.prototype.scrollIntoView).mockClear()
+    press('r')
+    speech.starts()
+    // A block's first sentence is placed by the row holding the block.
+    expect(speech.spoken.at(-1)?.text).toBe('CHAPTER ONE')
+    expect(scrolledTo()).toEqual(['0'])
+    speech.ends()
+    speech.starts()
+    expect(speech.spoken.at(-1)?.text).toBe('Who asked.')
+    expect(scrolledTo()).toEqual(['0', '1'])
+    // A later one, by its first character, measured at 900.
+    expect(vi.mocked(text.scrollTo)).not.toHaveBeenCalled()
+    speech.ends()
+    speech.starts()
+    expect(speech.spoken.at(-1)?.text).toBe('Nobody knew.')
+    expect(vi.mocked(text.scrollTo).mock.calls).toEqual([[{ top: 900 }]])
+    press('r')
+  })
+
   it('stops reading aloud on Escape before anything else Escape closes', async () => {
     const speech = voices()
     const { host } = await opened(undefined, sentenced)
@@ -1281,6 +1389,25 @@ describe('BookReader', () => {
     expect(host.querySelector('.reader-top-bar')).toBeNull()
     touch(host, { held: 400 })
     expect(host.querySelector('.reader-top-bar')).not.toBeNull()
+  })
+
+  it('peeks at nothing on p compared, which draws no peek, so Escape closes the panel, and lets go of a peek as compare starts', async () => {
+    const { host } = await opened()
+    press('p')
+    expect(host.querySelector('.book-peek')).not.toBeNull()
+    press('Tab')
+    const layout = (name: string) =>
+      [
+        ...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button'),
+      ].find((b) => b.textContent === name)
+    act(() => layout('compare')?.click())
+    press('s')
+    expect(host.querySelector('[aria-label="Settings"]')).not.toBeNull()
+    press('p')
+    press('Escape')
+    expect(host.querySelector('[aria-label="Settings"]')).toBeNull()
+    act(() => layout('scroll')?.click())
+    expect(host.querySelector('.book-peek')).toBeNull()
   })
 
   it('closes a peek on Escape before the panel, and on a swap', async () => {
@@ -2316,6 +2443,41 @@ describe('BookReader', () => {
       )
       expect(selectedText()).toBe('Nobody')
       expect(bars(host)).toBe(false)
+    })
+
+    it('offers Save word only once the notes are read, keeping a word saved then and another device’s notes', async () => {
+      on()
+      const { fetch, written } = server(undefined, sentenced, [
+        note({ id: 'theirs', slot: 0, body: 'theirs' }),
+      ])
+      const answer = fetch.getMockImplementation()
+      let read = () => {}
+      const notesRead = new Promise<void>((resolve) => {
+        read = resolve
+      })
+      fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === '/api/works/w/notes' && init?.method !== 'PUT') {
+          await notesRead
+        }
+        if (url.startsWith('/api/dictionary/')) return Response.json([who])
+        return answer?.(url, init) as Promise<Response>
+      })
+      vi.stubGlobal('fetch', fetch)
+      Element.prototype.scrollIntoView = vi.fn()
+      const host = mount(<BookReader work="w" onLeave={vi.fn()} />)
+      await land()
+      await tapOn(host, 1, 2)
+      expect(lookUpTitle()).toBe('Who')
+      expect(saveWord()?.hasAttribute('disabled')).toBe(true)
+      read()
+      await land()
+      expect(saveWord()?.hasAttribute('disabled')).toBe(false)
+      act(() => saveWord()?.click())
+      await saved()
+      expect(written.at(-1)?.notes).toMatchObject([
+        { id: 'theirs' },
+        { edition: 'en', slot: 1, text: { start: 0, end: 3 } },
+      ])
     })
 
     it('looks up a Japanese text’s longest word from the character tapped, and saves that word', async () => {
@@ -3428,11 +3590,264 @@ describe('BookReader', () => {
           }),
         )
       })
+    const at = () => Number(slider?.getAttribute('aria-valuenow'))
     key('ArrowRight')
     expect(scrolledTo().at(-1)).toBe('0')
     key('Home')
     key('PageDown')
     expect(scrolledTo().at(-1)).toBe('1')
+    const tenth = at()
+    key('Home')
+    // Each press inside the heading leaves the reader at its start, and the
+    // next goes on from where the last asked, not from the heading again.
+    for (let i = 0; i < 10; i++) key('ArrowRight')
+    expect(at()).toBeGreaterThanOrEqual(tenth)
+  })
+
+  it('starts the progress line’s steps afresh in another edition, and once it has lost focus', async () => {
+    const long = {
+      ...book,
+      editions: {
+        ...book.editions,
+        en: {
+          ...book.editions.en,
+          blocks: [
+            { text: 'CHAPTER ONE', heading: true, sentences: [[0, 11]] },
+            { text: 'x'.repeat(100), heading: false, sentences: [[0, 100]] },
+          ],
+        },
+      },
+    }
+    const { host } = await opened(undefined, long)
+    scrolledPast(0)
+    press('Tab')
+    const slider = host.querySelector<HTMLElement>('[role="slider"]')
+    const presses = (n: number) => {
+      for (let i = 0; i < n; i++) {
+        act(() => {
+          slider?.dispatchEvent(
+            new KeyboardEvent('keydown', {
+              key: 'ArrowRight',
+              bubbles: true,
+              cancelable: true,
+            }),
+          )
+        })
+      }
+    }
+    const at = () => slider?.getAttribute('aria-valuenow')
+    // Three hundredths into English's heading, a tenth of the book.
+    presses(3)
+    expect(at()).toBe('0')
+    press(' ')
+    // Korean's heading is a ninth of its 18 characters: nine hundredths in
+    // stay in it, where twelve would not.
+    presses(9)
+    expect(at()).toBe('0')
+    act(() => {
+      slider?.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+    })
+    presses(3)
+    expect(at()).toBe('0')
+  })
+
+  it('never takes the reader back on the progress line’s forward arrow, from a later page of a paragraph', async () => {
+    paged()
+    // The long paragraph runs from page 0 to page 2.
+    const page = paging([0, [0, 2]])
+    const long = {
+      ...book,
+      editions: {
+        ...book.editions,
+        en: {
+          ...book.editions.en,
+          blocks: [
+            { text: 'CHAPTER ONE', heading: true, sentences: [[0, 11]] },
+            { text: 'x'.repeat(100), heading: false, sentences: [[0, 100]] },
+          ],
+        },
+      },
+    }
+    const { host } = await opened(undefined, long)
+    touch(host, { x: 300 })
+    press('ArrowRight')
+    press('ArrowRight')
+    expect(page()).toBe(2)
+    const slider = host.querySelector<HTMLElement>('[role="slider"]')
+    act(() => {
+      slider?.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'ArrowRight',
+          bubbles: true,
+          cancelable: true,
+        }),
+      )
+    })
+    expect(page()).toBe(2)
+  })
+
+  it('never takes the reader back on the progress line’s forward steps, compared, from a later page of a row', async () => {
+    paged('compare')
+    // Read in Korean, the row of its blocks 1 and 2 runs from page 0 to 2.
+    const page = paging([0, [0, 2], 2, 2, 2])
+    const { host } = await opened({ edition: 'ko', slot: 0 })
+    touch(host, { x: 300 })
+    press('ArrowRight')
+    press('ArrowRight')
+    expect(page()).toBe(2)
+    const slider = host.querySelector<HTMLElement>('[role="slider"]')
+    // Three tenths on, the third lands on Korean block 2, inside the row.
+    for (let i = 0; i < 3; i++) {
+      act(() => {
+        slider?.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'PageDown',
+            bubbles: true,
+            cancelable: true,
+          }),
+        )
+      })
+      expect(page()).toBe(2)
+    }
+  })
+
+  it('takes the reader on, compared, on a progress line step that lands past the row at the top', async () => {
+    paged('compare')
+    // Read in Korean, the row of its blocks 1 and 2 runs from page 0 to 2,
+    // and the row of its block 3 is on page 3.
+    const page = paging([0, [0, 2], 2, 3, 3])
+    const { host } = await opened({ edition: 'ko', slot: 0 })
+    touch(host, { x: 300 })
+    press('ArrowRight')
+    press('ArrowRight')
+    expect(page()).toBe(2)
+    const slider = host.querySelector<HTMLElement>('[role="slider"]')
+    const step = () =>
+      act(() => {
+        slider?.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'PageDown',
+            bubbles: true,
+            cancelable: true,
+          }),
+        )
+      })
+    // Six tenths on is still Korean block 2, inside the row; seven is its
+    // block 3.
+    for (let i = 0; i < 6; i++) {
+      step()
+      expect(page()).toBe(2)
+    }
+    step()
+    expect(page()).toBe(3)
+  })
+
+  it('takes the reader back on the progress line’s back arrow, from a later page of a paragraph, to the block before', async () => {
+    paged()
+    // The long paragraph runs from page 0 to page 2.
+    const page = paging([0, [0, 2]])
+    const { host } = await opened(undefined, headed)
+    touch(host, { x: 300 })
+    press('ArrowRight')
+    press('ArrowRight')
+    expect(page()).toBe(2)
+    act(() => {
+      host.querySelector('[role="slider"]')?.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'ArrowLeft',
+          bubbles: true,
+          cancelable: true,
+        }),
+      )
+    })
+    expect(page()).toBe(0)
+  })
+
+  it('starts the progress line’s steps afresh after a press on the line', async () => {
+    const { host } = await opened(undefined, headed)
+    // The line a hundred pixels long, and every block on the screen.
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      () => ({ top: 0, bottom: 100, left: 0, width: 100 }) as DOMRect,
+    )
+    press('Tab')
+    const slider = host.querySelector<HTMLElement>('[role="slider"]')
+    const at = () => slider?.getAttribute('aria-valuenow')
+    const presses = (n: number) => {
+      for (let i = 0; i < n; i++) {
+        act(() => {
+          slider?.dispatchEvent(
+            new KeyboardEvent('keydown', {
+              key: 'ArrowRight',
+              bubbles: true,
+              cancelable: true,
+            }),
+          )
+        })
+      }
+    }
+    // Nine hundredths into the heading, which runs to 11 of 111 characters.
+    presses(9)
+    expect(at()).toBe('0')
+    // A press five hundredths along, in the heading too.
+    act(() => {
+      slider?.dispatchEvent(
+        new PointerEvent('pointerdown', { clientX: 5, bubbles: true }),
+      )
+    })
+    expect(at()).toBe('0')
+    // Gone on from the press, not from the nine hundredths asked before it.
+    presses(1)
+    expect(at()).toBe('0')
+  })
+
+  it('starts the progress line’s steps afresh once the reader has moved by other means', async () => {
+    const longer = {
+      ...headed,
+      editions: {
+        ...headed.editions,
+        en: {
+          ...headed.editions.en,
+          blocks: [
+            ...headed.editions.en.blocks,
+            { text: 'y'.repeat(100), heading: false, sentences: [[0, 100]] },
+          ],
+        },
+      },
+    }
+    const { host } = await opened(undefined, longer)
+    const scrolled = (first: number) => {
+      scrolledPast(first)
+      act(() => {
+        host.querySelector('.book-text')?.dispatchEvent(new Event('scroll'))
+      })
+    }
+    scrolled(1)
+    press('Tab')
+    const slider = host.querySelector<HTMLElement>('[role="slider"]')
+    const at = () => slider?.getAttribute('aria-valuenow')
+    const presses = (n: number) => {
+      for (let i = 0; i < n; i++) {
+        act(() => {
+          slider?.dispatchEvent(
+            new KeyboardEvent('keydown', {
+              key: 'ArrowRight',
+              bubbles: true,
+              cancelable: true,
+            }),
+          )
+        })
+      }
+    }
+    // The paragraph after the heading runs from 11 to 111 of 211 characters:
+    // five hundredths on stay in it.
+    expect(at()).toBe('5')
+    presses(5)
+    expect(at()).toBe('5')
+    // Scrolled back to the heading, a hundredth on is in the heading.
+    scrolled(0)
+    expect(at()).toBe('0')
+    presses(1)
+    expect(at()).toBe('0')
   })
 
   it('pins, compared, a paragraph on the left to its match on the right, for an administrator', async () => {
@@ -3709,6 +4124,158 @@ describe('BookReader', () => {
         ),
       ].map((c) => c.dataset.column),
     ).toEqual(['ko', 'en', 'fr'])
+  })
+
+  /**
+   * Read in Korean beside English and scrolled to the last row, which holds
+   * English's blocks 3 to 5 beside none of Korean's 4, so is named Korean
+   * block 4, past Korean's end.
+   */
+  async function atTheLastRow() {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'compare' }),
+    )
+    const opening = await opened({ edition: 'ko', slot: 0 })
+    expect(
+      [...opening.host.querySelectorAll<HTMLElement>('.book-row')].map(
+        (row) => row.dataset.block,
+      ),
+    ).toEqual(['0', '1', '3', '4'])
+    scrolledPast(4)
+    act(() => {
+      opening.host
+        .querySelector('.book-text')
+        ?.dispatchEvent(new Event('scroll'))
+    })
+    return opening
+  }
+
+  it('swaps, compared, from a last row of only English to the English it shows, not the book’s start', async () => {
+    await atTheLastRow()
+    press(' ')
+    expect(scrolledTo().at(-1)).toBe('3')
+  })
+
+  it('swaps, compared, from the second of two last rows of only English to the English it shows', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'compare' }),
+    )
+    // English's blocks 3 and 4 to 5 are two rows, each beside none of
+    // Korean's 4, so both are named Korean block 4.
+    const split = {
+      ...book,
+      alignments: [
+        {
+          ...book.alignments[0],
+          links: [
+            [0, 1, 0, 1],
+            [1, 2, 1, 3],
+            [2, 3, 3, 4],
+            [3, 4, 4, 4],
+            [4, 6, 4, 4],
+          ],
+        },
+      ],
+    }
+    const { host } = await opened({ edition: 'ko', slot: 0 }, split)
+    const rows = [...host.querySelectorAll<HTMLElement>('.book-row')]
+    expect(rows.map((row) => row.dataset.block)).toEqual([
+      '0',
+      '1',
+      '3',
+      '4',
+      '4',
+    ])
+    // Every row but the last scrolled past the top.
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        const index = rows.indexOf(this as HTMLElement)
+        if (index < 0) return { top: 0, bottom: 0 } as DOMRect
+        return { top: 0, bottom: index < 4 ? -10 : 100 } as DOMRect
+      },
+    )
+    act(() => {
+      host.querySelector('.book-text')?.dispatchEvent(new Event('scroll'))
+    })
+    press(' ')
+    expect(scrolledTo().at(-1)).toBe('4')
+  })
+
+  it('lights, swapping compared from a last row of only English, the English blocks the row shows', async () => {
+    const { host } = await atTheLastRow()
+    press(' ')
+    // Compared, no block's light is drawn: it is seen once compare is left
+    // before it fades.
+    press('Tab')
+    act(() =>
+      [...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button')]
+        .find((b) => b.textContent === 'scroll')
+        ?.click(),
+    )
+    expect(lit(host)).toEqual(['3', '4', '5'])
+  })
+
+  it('writes a note, compared, from a last row of only English on Korean’s last block', async () => {
+    const { written } = await atTheLastRow()
+    press('n')
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 750))
+    })
+    await land()
+    expect(written.at(-1)?.notes.map((n) => [n.edition, n.slot])).toEqual([
+      ['ko', 3],
+    ])
+  })
+
+  it('reads aloud, compared, from a last row of only English from Korean’s last block', async () => {
+    const speech = voices()
+    await atTheLastRow()
+    press('r')
+    expect(speech.spoken.map((u) => [u.text, u.lang])).toEqual([
+      ['아무도.', 'ko'],
+    ])
+  })
+
+  it('puts the edition swapped to first and the one left beside it, with no columns ever chosen', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'compare' }),
+    )
+    const { host } = await opened(undefined, three)
+    const shown = () =>
+      [
+        ...host.querySelectorAll<HTMLElement>(
+          '.book-row:first-child > [data-column]',
+        ),
+      ].map((c) => c.dataset.column)
+    const [read, beside] = shown()
+    expect(shown()).toHaveLength(2)
+    press(' ')
+    expect(shown()).toEqual([beside, read])
+    press(' ')
+    expect(shown()).toEqual([read, beside])
+  })
+
+  it('keeps the edition after the one read as the column beside it, with no columns ever chosen, after a swap made reading alone', async () => {
+    const { host } = await opened(undefined, three)
+    press(' ')
+    press('Tab')
+    act(() =>
+      [...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button')]
+        .find((b) => b.textContent === 'compare')
+        ?.click(),
+    )
+    // French is read, swapped to from English, and Korean is the edition
+    // after it.
+    expect(
+      [
+        ...host.querySelectorAll<HTMLElement>(
+          '.book-row:first-child > [data-column]',
+        ),
+      ].map((c) => c.dataset.column),
+    ).toEqual(['fr', 'ko'])
   })
 
   it('lets go of a lit pair of sentences when compare is left', async () => {
@@ -4627,6 +5194,27 @@ const linked = {
   },
 }
 
+/** `book` with English's block 1 linking to its block 5. */
+const linkingOn = {
+  ...book,
+  editions: {
+    ...book.editions,
+    en: {
+      ...book.editions.en,
+      blocks: book.editions.en.blocks.map((block, i) =>
+        i === 1
+          ? {
+              ...block,
+              marks: [
+                { kind: 'link', start: 1, end: 5, block: 5, note: false },
+              ],
+            }
+          : block,
+      ),
+    },
+  },
+}
+
 /** The link drawn in block `block` of the text read. */
 const linkIn = (host: HTMLElement, block: number) =>
   host.querySelector<HTMLElement>(`.book-text [data-block="${block}"] a`)
@@ -4716,6 +5304,67 @@ describe('a book’s links', () => {
     act(() => backButton(host)?.click())
     expect(scrolledTo().at(-1)).toBe('2')
     expect(backButton(host)).toBeUndefined()
+  })
+
+  it('returns, compared and paged, to the page the link was followed from, not the first its row is on', async () => {
+    paged('compare')
+    // English's block 1, in a row that runs from page 0 to page 2, links to
+    // block 5 on the last page.
+    const page = paging([0, [0, 2], 2, 2])
+    const { host } = await opened(undefined, linkingOn)
+    press('ArrowRight')
+    expect(page()).toBe(1)
+    touch(host, { on: host.querySelector('[data-pick="left:1"] a') })
+    expect(page()).toBe(2)
+    act(() => backButton(host)?.click())
+    expect(page()).toBe(1)
+  })
+
+  it('returns to the block a link was followed from, compared and paged, once paging is left before Back', async () => {
+    paged('compare')
+    const page = paging([0, [0, 2], 2, 2])
+    const { host } = await opened(undefined, linkingOn)
+    press('ArrowRight')
+    expect(page()).toBe(1)
+    touch(host, { on: host.querySelector('[data-pick="left:1"] a') })
+    expect(page()).toBe(2)
+    const layout = (name: string) =>
+      [
+        ...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button'),
+      ].find((b) => b.textContent === name)
+    act(() => layout('paged')?.click())
+    vi.mocked(Element.prototype.scrollIntoView).mockClear()
+    act(() => backButton(host)?.click())
+    // Placed by the row holding block 1, not scrolled a third of the way into
+    // it, which is how far into the row the page the link was on began.
+    expect(scrolledTo()).toEqual(['1'])
+  })
+
+  it('returns to the block a link was followed from, scrolled, though compare is chosen before Back', async () => {
+    const { host } = await opened(undefined, linked)
+    // The screen starts a quarter into the first line of block 0.
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      () => ({ top: 0, bottom: 100, left: 0, right: 600 }) as DOMRect,
+    )
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [{ top: -5, bottom: 15, left: 0, right: 10 }],
+    })
+    onTestFinished(() => {
+      Reflect.deleteProperty(Range.prototype, 'getClientRects')
+    })
+    host.querySelector<HTMLElement>('.book-text')!.scrollTo = vi.fn()
+    touch(host, { on: linkIn(host, 2) })
+    expect(scrolledTo().at(-1)).toBe('3')
+    const layout = (name: string) =>
+      [
+        ...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button'),
+      ].find((b) => b.textContent === name)
+    act(() => layout('compare')?.click())
+    act(() => backButton(host)?.click())
+    // Placed by the row holding block 0, not by a fraction of a line's
+    // height taken into a row's.
+    expect(scrolledTo().at(-1)).toBe('0')
   })
 
   it('keeps the bars and Back up on a link tapped just after a tap on the text', async () => {

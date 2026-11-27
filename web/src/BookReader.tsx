@@ -92,6 +92,7 @@ import {
   show,
   shows,
   topBlock,
+  topChild,
   topOf,
   turn,
   whole,
@@ -695,9 +696,16 @@ export function BookReader({
     const left = lastRead.current
     const now = shownEdition
     lastRead.current = now
-    if (!left || !now || left === now) return
-    setOthers((kept) => kept.map((k) => (k === now ? left : k)))
-  }, [shownEdition])
+    if (!book || !left || !now || left === now) return
+    setOthers((kept) => {
+      // With no columns chosen, the one shown is the edition after the one
+      // read, which a swap to it would leave for the edition after that.
+      const chosen = kept.some((k) => k in book.editions && k !== left)
+      if (!chosen)
+        return comparing && nextEdition(book, left) === now ? [left] : kept
+      return kept.map((k) => (k === now ? left : k))
+    })
+  }, [book, shownEdition, comparing])
   const pinnable = comparing && columnKeys.length === 2
   const interlinear = mode === 'interlinear' && other !== undefined
   const japanese = useMemo(() => edition && isJapanese(edition), [edition])
@@ -737,6 +745,8 @@ export function BookReader({
   }, [pinnable])
   useEffect(() => {
     if (!comparing) setPaired(undefined)
+    // Compared, no peek is drawn, and one kept unseen would take Escape.
+    else setPeek(undefined)
   }, [comparing])
 
   const shownNotes = useMemo(
@@ -754,7 +764,11 @@ export function BookReader({
     if (!range) return
     const at = { block, at: range[0] }
     if (place.block === at.block && place.at === at.at) return
-    if (!shows(text.current, at)) setPlace({ edition: place.edition, ...at })
+    // Looked for as a match is, since compared a block's words are drawn in
+    // its row's column rather than on their own.
+    if (!matchShows(text.current, { block, start: range[0] })) {
+      setPlace({ edition: place.edition, ...at })
+    }
   }, [speaking, edition, firsts, place])
   useEffect(() => () => stopReading.current?.(), [])
 
@@ -1378,9 +1392,20 @@ export function BookReader({
     (to: string, landing?: { block: number; at: number }) => {
       if (!book || !place || to === place.edition) return
       const from = topBlock(text.current)
-      const block = landing?.block ?? counterpart(book, place.edition, to, from)
+      const read = book.editions[place.edition].blocks.length
+      // Compared, a last row holding only the other columns' blocks is named
+      // past the end of the edition read, which has nothing there to find a
+      // counterpart of: the swap lands on, and lights, that row's own blocks.
+      const past =
+        comparing && from >= read
+          ? topRowOf(book, text.current, columnKeys)?.[columnKeys.indexOf(to)]
+          : undefined
+      const row = past && past[1] > past[0] ? past : undefined
+      const near = Math.min(from, read - 1)
+      const block =
+        landing?.block ?? row?.[0] ?? counterpart(book, place.edition, to, near)
       setPlace({ edition: to, block, at: landing?.at })
-      if (!landing) setLit(span(book, place.edition, to, from))
+      if (!landing) setLit(row ?? span(book, place.edition, to, near))
       setPeek(undefined)
       setPaired(undefined)
       stopReading.current?.()
@@ -1389,7 +1414,7 @@ export function BookReader({
       session.current.paced = { since: Date.now(), read: 0 }
       savePlacing({ edition: to, block })
     },
-    [book, place, savePlacing],
+    [book, place, comparing, columnKeys, savePlacing],
   )
   // A match gone to, by the list, Enter, `]` or `[`: the text placed at its
   // first character, in its own edition, and lit.
@@ -1436,10 +1461,11 @@ export function BookReader({
   }, [found, place])
 
   useEffect(() => {
-    // Aloud from the sentence the page or screen starts with, in the
-    // edition's own language, which a device with no voice for it says
+    // Aloud from the sentence the page or screen starts with, the one holding
+    // `from`, the character at the top in the edition read (`topRead`), in
+    // the edition's own language, which a device with no voice for it says
     // rather than reading in another's.
-    function readFromTop() {
+    function readFromTop(from: { block: number; at: number }) {
       if (!book || !place) return
       const reading = book.editions[place.edition]
       const lang = reading.language
@@ -1447,12 +1473,11 @@ export function BookReader({
         setNotice(`This device has no voice for ${lang}.`)
         return
       }
-      const top = topOf(text.current)
       const { rate } = sliceFor(prefs, readAloudModule)
       let ended = false
       const stop = speak(
         sentenceTexts(reading),
-        sentenceAt(reading.blocks, top.block, top.at),
+        sentenceAt(reading.blocks, from.block, from.at),
         lang,
         Math.min(RATES[1], Math.max(RATES[0], rate)),
         {
@@ -1549,7 +1574,21 @@ export function BookReader({
         .all()
         .flatMap((m) => m.keys ?? [])
         .find((k) => k.key === event.key)
-      if (own?.intent === PEEK_TOGGLE) {
+      // The character at the top in the edition read: compared and paged,
+      // the page's first of that edition (`Anchor.read`), as Back keeps it,
+      // since the row's first block can lie pages back. Else `topOf`'s, which
+      // compared is a row's start, or at a last row of only the other
+      // columns' blocks, the start of that edition's last block.
+      const topRead = () => {
+        const read = keepsRead(text.current)
+          ? anchorOf(text.current).read
+          : undefined
+        if (read) return read
+        const top = topOf(text.current)
+        const last = book.editions[place?.edition ?? book.hub].blocks.length - 1
+        return top.block > last ? { block: last, at: 0 } : top
+      }
+      if (own?.intent === PEEK_TOGGLE && !comparing) {
         const at = topBlock(text.current)
         setPeek((p) =>
           p?.block === at && p.sentence === undefined
@@ -1573,7 +1612,7 @@ export function BookReader({
       if (place && notes.ready && own?.intent === NEW_INTENT) {
         const note = newNote(
           place.edition,
-          topBlock(text.current),
+          topRead().block,
           DEFAULT_COLOUR,
           new Date(),
         )
@@ -1583,7 +1622,7 @@ export function BookReader({
       }
       if (own?.intent === READ_INTENT) {
         if (stopReading.current) stopReading.current()
-        else readFromTop()
+        else readFromTop(topRead())
       }
       if (own?.intent === LOOKUP_TOGGLE) setPrefs(lookupToggled)
       if (own?.intent === UNDO_INTENT) notes.undo()
@@ -1745,7 +1784,14 @@ export function BookReader({
   // reader was kept for Back, the bars shown and any panel closed so Back is
   // seen.
   const jump = (to: string, block: number) => {
-    setBack({ edition: place.edition, ...topOf(text.current) })
+    // Compared and paged, a row can carry one block over many pages, so the
+    // page is kept by how far into the row it is and the character read on it.
+    setBack({
+      edition: place.edition,
+      ...(keepsRead(text.current)
+        ? anchorOf(text.current)
+        : topOf(text.current)),
+    })
     keyboardBars.shown()
     setBars(true)
     setPanel(undefined)
@@ -2189,7 +2235,21 @@ export function BookReader({
             progress={progress}
             ticks={entries.map((e) => through(at, e.block))}
             label={position}
-            onSeek={(fraction) => go(blockAt(at, fraction))}
+            edition={place.edition}
+            onSeek={(fraction, by) => {
+              const block = blockAt(at, fraction)
+              // A step forward that lands in the block at the top, or compared
+              // in the row at the top, would go back to its start, from a
+              // later page of it: the reader stays, and the next step goes on
+              // from there.
+              const held = comparing
+                ? topRowOf(book, text.current, columnKeys)?.[0][1]
+                : undefined
+              if (by !== undefined && by > 0 && block < (held ?? top + 1)) {
+                return
+              }
+              go(block)
+            }}
           />
           <div className="reader-readout" style={readoutStyle}>
             <button
@@ -2221,8 +2281,16 @@ export function BookReader({
                 type="button"
                 className="reader-button"
                 onClick={() => {
-                  setPlace(back)
-                  savePlacing(back)
+                  // Out of compare and paging, which the reader may have left
+                  // since, `into` would measure a box of another kind or size,
+                  // so the block is placed `whole`, as a new layout places it.
+                  // `read` holds in any layout but goes with `into`
+                  // (`Anchor.read`), so a Back kept on a later page of a row
+                  // lands on the row's first block, which can be pages before.
+                  const { into: _, read: __, ...placed } = back
+                  const to = keepsRead(text.current) ? back : placed
+                  setPlace(to)
+                  savePlacing(to)
                   setBack(undefined)
                 }}
               >
@@ -2328,20 +2396,24 @@ export function BookReader({
           word={lookingUp.word}
           looked={looked}
           tapsPass={tapsPass}
-          onSave={(entry) => {
-            const note = {
-              ...newNote(
-                lookingUp.edition,
-                lookingUp.block,
-                DEFAULT_COLOUR,
-                new Date(),
-                lookingUp.range,
-              ),
-              body: meaning(entry),
-            }
-            notes.change([...notes.notes, note])
-            setPanel(undefined)
-          }}
+          onSave={
+            notes.ready
+              ? (entry) => {
+                  const note = {
+                    ...newNote(
+                      lookingUp.edition,
+                      lookingUp.block,
+                      DEFAULT_COLOUR,
+                      new Date(),
+                      lookingUp.range,
+                    ),
+                    body: meaning(entry),
+                  }
+                  notes.change([...notes.notes, note])
+                  setPanel(undefined)
+                }
+              : undefined
+          }
           onClose={() => setPanel(undefined)}
         />
       )}
@@ -2597,6 +2669,22 @@ function keptColumns(work: string): string[] {
   } catch {
     return []
   }
+}
+
+/**
+ * Compared, the row at the top of `text`, as each column's `[start, end)` of
+ * blocks. Found by its place among the rows rather than by its name: the rows
+ * past the end of the edition read, holding only the others' blocks, all
+ * carry that edition's length as their name.
+ */
+function topRowOf(
+  book: Book,
+  text: HTMLElement | null,
+  shown: string[],
+): [number, number][] | undefined {
+  const child = text && topChild(text)
+  const index = text && child ? [...text.children].indexOf(child) : -1
+  return index < 0 ? undefined : columns(book, shown)[index]
 }
 
 /**

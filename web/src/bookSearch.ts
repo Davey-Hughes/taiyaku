@@ -1,4 +1,5 @@
 import type { Block, Book, Edition } from './book'
+import { characterCut, characterEnd } from './bookNotes'
 
 /** A hit: UTF-16 offsets into the block's original `text`, never the folded one. */
 export interface Match {
@@ -230,21 +231,20 @@ export function isJapanese(edition: Edition): boolean {
   return kana > 0 && (kana + kanji) * 2 > letters
 }
 
-const isLow = (text: string, i: number) => {
-  const c = text.charCodeAt(i)
-  return c >= 0xdc00 && c <= 0xdfff
-}
-
-/** The text around a match, clipped at the block's ends and never inside a surrogate pair. */
+/**
+ * The text around a match, clipped at the block's ends, and a character the
+ * clip falls in left out whole (`characterCut`): cut, a kana would lose its
+ * voicing mark or a kanji its variation selector, or the mark be drawn alone.
+ */
 export function context(
   text: string,
   m: Match,
   around = 30,
 ): { before: string; match: string; after: string } {
-  let from = Math.max(0, m.start - around)
-  if (from > 0 && isLow(text, from)) from++
-  let to = Math.min(text.length, m.end + around)
-  if (to < text.length && isLow(text, to)) to--
+  const start = Math.max(0, m.start - around)
+  const near = characterCut(text, start)
+  const from = near < start ? characterEnd(text, near) : start
+  const to = characterCut(text, Math.min(text.length, m.end + around))
   return {
     before: text.slice(from, m.start),
     match: text.slice(m.start, m.end),

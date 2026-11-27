@@ -13,6 +13,7 @@ export function BookProgress({
   progress,
   ticks,
   label,
+  edition,
   onSeek,
 }: {
   progress: number
@@ -20,10 +21,20 @@ export function BookProgress({
   ticks: number[]
   /** What the reader is at, said for a screen reader. */
   label: string
-  onSeek: (fraction: number) => void
+  /** The edition read, whose keys' steps alone go on from one another. */
+  edition: string
+  /** Go `fraction` of the way through the book; `by` is the step, when a key asked. */
+  onSeek: (fraction: number, by?: number) => void
 }) {
   const line = useRef<HTMLDivElement>(null)
+  // Where a forward key last asked to go, in which edition, and how far
+  // through the book the reader was when it asked. The reader's place is a
+  // block's start, so a step inside a long block leaves it where it was, and
+  // the next goes on from what was asked rather than asking for the same
+  // block again. A step back always leaves the block, so goes from the place.
+  const asked = useRef<{ edition: string; from: number; to: number }>(undefined)
   const seekAt = (x: number) => {
+    asked.current = undefined
     const box = line.current?.getBoundingClientRect()
     if (box && box.width > 0) onSeek((x - box.left) / box.width)
   }
@@ -54,18 +65,31 @@ export function BookProgress({
           seekAt(event.clientX)
         }
       }}
+      // Gone elsewhere, as to the contents or Back, the keys start afresh.
+      onBlur={() => {
+        asked.current = undefined
+      }}
       onKeyDown={(event) => {
         const by = keys[event.key]
+        const last = asked.current
+        const from =
+          by !== undefined &&
+          by > 0 &&
+          last?.edition === edition &&
+          last.from === progress
+            ? last.to
+            : progress
         const to =
           event.key === 'Home'
             ? 0
             : event.key === 'End'
               ? 1
-              : by && progress + by
+              : by && Math.min(1, Math.max(0, from + by))
         if (to === undefined) return
         event.preventDefault()
         event.stopPropagation()
-        onSeek(to)
+        asked.current = { edition, from: progress, to }
+        onSeek(to, by)
       }}
     >
       <div ref={line} className="reader-progress" style={progressStyle}>

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { contents } from '../src/book'
 import {
   anchorOf,
   bringIntoSight,
@@ -6,11 +7,13 @@ import {
   kept,
   matchShows,
   movesAnchor,
+  pagesOf,
   readingAt,
   readPlaced,
   resumeBlock,
   show,
   shows,
+  topBlock,
   topOf,
   whole,
   wordNodes,
@@ -50,11 +53,17 @@ let bases = new WeakMap<Node, number>()
  * `vertical` stands the lines up, 30 px wide, running leftward from the
  * right edge, or paged, a page 400 px high each down the screen. A
  * `{ figure: n }` is a figure between blocks, `n` lines tall from the start
- * of a line (paged, `n` pages), naming no block.
+ * of a line (paged, `n` pages), naming no block; `{ after: k }` is one set
+ * on after the words before it, `k` characters' room long.
  */
 function text(
   paged: boolean,
-  blocks: (string | [string, number, string] | { figure: number })[],
+  blocks: (
+    | string
+    | [string, number, string]
+    | { figure: number }
+    | { after: number }
+  )[],
   vertical = false,
 ) {
   bases = new WeakMap()
@@ -83,12 +92,13 @@ function text(
   let block = 0
   for (const given of blocks) {
     if (!Array.isArray(given) && typeof given === 'object') {
-      at = Math.ceil(at / PER) * PER
+      const start = 'after' in given ? at : Math.ceil(at / PER) * PER
+      const end = start + ('after' in given ? given.after : given.figure * PER)
       const figure = document.createElement('figure')
       figure.dataset.figure = ''
-      figure.getBoundingClientRect = spanning(at, at + given.figure * PER - 1)
+      figure.getBoundingClientRect = spanning(start, end - 1)
       el.append(figure)
-      at += given.figure * PER
+      at = end
       continue
     }
     const [words, cut, aside] =
@@ -1130,5 +1140,148 @@ describe('a word brought into sight', () => {
       bringIntoSight(el, wordOf(wordAt(-100)), [])
       expect(el.scrollTop).toBe(TALL)
     })
+  })
+})
+
+describe('the chapter’s pages, on a page a figure fills', () => {
+  const block = (words: string, heading = false) => ({
+    text: words,
+    heading,
+    sentences: [[0, words.length]] as [number, number][],
+  })
+  /** `text`, paged and `pages` pages wide. */
+  const paged = (blocks: Parameters<typeof text>[1], pages: number) => {
+    const el = text(true, blocks)
+    Object.defineProperty(el, 'scrollWidth', { value: pages * PAGE })
+    return el
+  }
+
+  it('counts a page of figures alone before a chapter’s heading as that chapter’s first page, and leaves the page of text before it the chapter before’s', () => {
+    // Page 0: chapter one. Page 1: a figure. Page 2: chapter two.
+    const blocks = [
+      block('ONE', true),
+      block('abc'),
+      block('TWO', true),
+      block('def'),
+    ]
+    const el = paged(['ONE', 'abc', { figure: 1 }, 'TWO', 'def'], 3)
+    const chapter = () => pagesOf(el, contents(blocks), topBlock(el))?.chapter
+    expect(chapter()).toEqual({ at: 1, of: 1 })
+    el.scrollLeft = PAGE
+    expect(chapter()).toEqual({ at: 1, of: 2 })
+    el.scrollLeft = 2 * PAGE
+    expect(chapter()).toEqual({ at: 2, of: 2 })
+  })
+
+  it('counts a cover before the book’s first heading as its first chapter’s first page', () => {
+    const blocks = [block('ONE', true), block('abc')]
+    const el = paged([{ figure: 1 }, 'ONE', 'abc'], 2)
+    expect(pagesOf(el, contents(blocks), topBlock(el))).toEqual({
+      at: 1,
+      of: 2,
+      chapter: { at: 1, of: 2 },
+    })
+  })
+
+  it('counts a cover and a frontispiece before the book’s first heading as its first chapter’s first two pages', () => {
+    const blocks = [block('ONE', true), block('abc')]
+    const el = paged([{ figure: 1 }, { figure: 1 }, 'ONE', 'abc'], 3)
+    const chapter = () => pagesOf(el, contents(blocks), topBlock(el))?.chapter
+    expect(chapter()).toEqual({ at: 1, of: 3 })
+    el.scrollLeft = PAGE
+    expect(chapter()).toEqual({ at: 2, of: 3 })
+    el.scrollLeft = 2 * PAGE
+    expect(chapter()).toEqual({ at: 3, of: 3 })
+  })
+
+  it('leaves a figure that ends a chapter on the page holding its last words that chapter’s, and the next chapter’s heading its first page', () => {
+    // Page 0: chapter one, and a figure after its words to the page's end.
+    // Page 1: chapter two.
+    const blocks = [
+      block('ONE', true),
+      block('abc'),
+      block('TWO', true),
+      block('def'),
+    ]
+    const el = paged(['ONE', 'abc', { after: 14 }, 'TWO', 'def'], 2)
+    const chapter = () => pagesOf(el, contents(blocks), topBlock(el))?.chapter
+    expect(chapter()).toEqual({ at: 1, of: 1 })
+    el.scrollLeft = PAGE
+    expect(chapter()).toEqual({ at: 1, of: 1 })
+  })
+
+  it('counts a chapter from the page after the one the text before its figures ends on, not the one it starts on, where that text runs over two pages', () => {
+    // Page 0: chapter one and the start of its paragraph. Page 1: the
+    // paragraph's end and a figure set after it. Page 2: a figure. Page 3:
+    // chapter two.
+    const words = 'a'.repeat(30)
+    const blocks = [
+      block('ONE', true),
+      block(words),
+      block('TWO', true),
+      block('def'),
+    ]
+    const el = paged(
+      ['ONE', words, { after: 5 }, { figure: 1 }, 'TWO', 'def'],
+      4,
+    )
+    // `text` gives a block only its first line's box, which cannot tell where
+    // a block over two pages ends; this one is given its last line's too.
+    const paragraph = el.querySelector('[data-block="1"]') as HTMLElement
+    paragraph.getClientRects = () => {
+      const all = paragraph.getBoundingClientRect()
+      return [
+        new DOMRect(all.left, all.top, WIDE, 20),
+        new DOMRect(all.right - WIDE, all.top, WIDE, 20),
+      ] as unknown as DOMRectList
+    }
+    const chapter = () => pagesOf(el, contents(blocks), topBlock(el))?.chapter
+    expect(chapter()).toEqual({ at: 1, of: 2 })
+    el.scrollLeft = PAGE
+    expect(chapter()).toEqual({ at: 2, of: 2 })
+    el.scrollLeft = 2 * PAGE
+    expect(chapter()).toEqual({ at: 1, of: 2 })
+    el.scrollLeft = 3 * PAGE
+    expect(chapter()).toEqual({ at: 2, of: 2 })
+  })
+
+  it('counts two pages of figures alone before a chapter’s heading as its first two pages, and the heading’s page as its third', () => {
+    // Page 0: chapter one. Pages 1 and 2: a figure each. Page 3: chapter two.
+    const blocks = [
+      block('ONE', true),
+      block('abc'),
+      block('TWO', true),
+      block('def'),
+    ]
+    const el = paged(
+      ['ONE', 'abc', { figure: 1 }, { figure: 1 }, 'TWO', 'def'],
+      4,
+    )
+    const chapter = () => pagesOf(el, contents(blocks), topBlock(el))?.chapter
+    expect(chapter()).toEqual({ at: 1, of: 1 })
+    el.scrollLeft = PAGE
+    expect(chapter()).toEqual({ at: 1, of: 3 })
+    el.scrollLeft = 2 * PAGE
+    expect(chapter()).toEqual({ at: 2, of: 3 })
+    el.scrollLeft = 3 * PAGE
+    expect(chapter()).toEqual({ at: 3, of: 3 })
+  })
+
+  it('counts a chapter from its heading’s page where the chapter before ends on that page, a figure between', () => {
+    // Page 0: chapter one, a figure and chapter two's heading. Pages 1 and 2:
+    // the rest of chapter two.
+    const blocks = [
+      block('ONE', true),
+      block('abc'),
+      block('TWO', true),
+      block('d'.repeat(30)),
+    ]
+    const el = paged(['ONE', 'abc', { after: 5 }, 'TWO', 'd'.repeat(30)], 3)
+    const chapter = () => pagesOf(el, contents(blocks), topBlock(el))?.chapter
+    expect(chapter()).toEqual({ at: 1, of: 1 })
+    el.scrollLeft = PAGE
+    expect(chapter()).toEqual({ at: 2, of: 3 })
+    el.scrollLeft = 2 * PAGE
+    expect(chapter()).toEqual({ at: 3, of: 3 })
   })
 })

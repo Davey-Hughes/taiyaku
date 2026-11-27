@@ -1403,6 +1403,117 @@ describe('a step from inside a compared row longer than a screen', () => {
   }
 })
 
+/** `merged` with each block written as numbered sentences, enough that the row of blocks 1 to 3 runs on over pages. */
+const sentencedMerged = {
+  ...merged,
+  editions: Object.fromEntries(
+    Object.entries(merged.editions).map(([key, edition]) => [
+      key,
+      {
+        ...edition,
+        blocks: edition.blocks.map((_, i) => {
+          const said = Array.from(
+            { length: 80 },
+            (_, k) =>
+              `Block ${i} says line ${k} on a bright cold day in April. `,
+          )
+          const sentences: [number, number][] = []
+          for (const one of said) {
+            const start = sentences.at(-1)?.[1] ?? 0
+            sentences.push([start, start + one.length])
+          }
+          return { text: said.join(''), heading: false, sentences }
+        }),
+      },
+    ]),
+  ),
+}
+
+describe('the keys that act at the top of the page, on a later page of a merged row, compared and paged', () => {
+  const compared = { mode: 'compare', paged: true }
+  const blockTwo = sentencedMerged.editions.en.blocks[2]
+
+  /** Opened at the row's first block, and turned on to a page that starts inside block 2, past its first sentence. */
+  async function inBlockTwo(view: View) {
+    const host = await opened(view, 'en', 1, compared, {}, sentencedMerged)
+    const text = textOf(host)
+    const [, firstEnd] = blockTwo.sentences[0]
+    await turnedUntil(text, (shown) => {
+      const read = anchorOf(shown).read
+      return read?.block === 2 && read.at >= firstEnd
+    })
+    const read = anchorOf(text).read
+    expect(read?.block, 'block 2 is carried onto the page').toBe(2)
+    expect(read?.at, 'past its first sentence').toBeGreaterThanOrEqual(firstEnd)
+    expect(topOf(text).block, 'the row starts with block 1').toBe(1)
+    return { host, text, at: read?.at ?? 0 }
+  }
+
+  for (const view of [SET_IN, PHONE]) {
+    it(`reads aloud on r from the sentence the page starts with, not the row's first, ${view.name}`, async () => {
+      speaksNothing()
+      const { at } = await inBlockTwo(view)
+      const [from, to] = blockTwo.sentences.find(([, end]) => end > at) ?? []
+      await pressed('r')
+      expect(spoken.map((u) => u.text)).toEqual([blockTwo.text.slice(from, to)])
+    })
+
+    it(`notes on n the block the page starts in, not the row's first, ${view.name}`, async () => {
+      await inBlockTwo(view)
+      await pressed('n')
+      await act(() => new Promise((done) => setTimeout(done, 1000)))
+      const written = vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([url, init]) =>
+            url === '/api/works/w/notes' && init?.method === 'PUT',
+        )
+        .map(([, init]) => JSON.parse(String(init?.body)))
+      expect(
+        written
+          .at(-1)
+          ?.notes.map((n: { edition: string; slot: number }) => [
+            n.edition,
+            n.slot,
+          ]),
+      ).toEqual([['en', 2]])
+    })
+  }
+})
+
+describe('r reading alone and paged, on a page that starts past a block’s first sentence', () => {
+  const alone = { mode: 'scroll', paged: true }
+  const { blocks } = sentencedMerged.editions.en
+
+  // The edition's last block is the one the clamp at a compared last row of
+  // only the other columns' blocks names, so a place inside it must pass the
+  // clamp as it is, sentence and all.
+  for (const [block, where] of [
+    [2, 'a block before the last'],
+    [blocks.length - 1, 'the edition’s last block'],
+  ] as const) {
+    it(`reads from the sentence the page starts with, not the first of its block, in ${where}`, async () => {
+      speaksNothing()
+      const host = await opened(SET_IN, 'en', block, alone, {}, sentencedMerged)
+      const text = textOf(host)
+      const [, firstEnd] = blocks[block].sentences[0]
+      await turnedUntil(text, (shown) => {
+        const top = topOf(shown)
+        return top.block === block && top.at >= firstEnd
+      })
+      const top = topOf(text)
+      expect(top.block, `block ${block} is carried onto the page`).toBe(block)
+      expect(top.at, 'past its first sentence').toBeGreaterThanOrEqual(firstEnd)
+      const [from, to] =
+        blocks[block].sentences.find(([, end]) => end > top.at) ?? []
+      await pressed('r')
+      expect(spoken.map((u) => u.text)).toEqual([
+        blocks[block].text.slice(from, to),
+      ])
+    })
+  }
+})
+
 /** How many blocks `figured` has. */
 const FIGURED = 24
 
@@ -4282,7 +4393,9 @@ describe('a match gone to, through the text laid out again where it stands', () 
         const { edition, layout, typeset } = mode
         const host = await opened(view, edition, 20, layout, typeset, routed)
         const text = textOf(host)
-        const from = topOf(text)
+        // The reader's place is the first character read on the page shown:
+        // compared, a row can run over many pages, so it need not open the row.
+        const from = firstShown(text)
         const link = text.querySelector<HTMLElement>(
           '[data-block="20"] a[data-link-block], [data-pick="left:20"] a[data-link-block]',
         )
@@ -4302,6 +4415,10 @@ describe('a match gone to, through the text laid out again where it stands', () 
         expect(back, 'Back is offered').toBeDefined()
         await act(async () => back?.click())
         await settled()
+        expect(
+          firstShown(text),
+          'Back returns to the page the link was followed from',
+        ).toEqual(from)
         expect(
           matchShows(text, { block: 35, start: 0 }),
           'the match is off the page',

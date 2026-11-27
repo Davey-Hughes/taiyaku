@@ -368,4 +368,31 @@ describe('context', () => {
       after: '67',
     })
   })
+  it('never parts a kana from the combining voicing mark written after it at the clip', () => {
+    // か and a combining voicing mark are drawn as one が. A clip between them
+    // leaves the か out of `after` with its mark, and the mark out of `before`.
+    const at = { edition: 'ja', block: 0, start: 0, end: 2 }
+    const ahead = `abいいがき`
+    expect(context(ahead, at, 3).after).toBe('いい')
+    // One unit further, the clip falls after the mark, and both are kept.
+    expect(context(ahead, at, 4).after).toBe('いいが')
+    const behind = { edition: 'ja', block: 0, start: 4, end: 6 }
+    const back = `がいいab`
+    expect(context(back, behind, 3).before).toBe('いい')
+    expect(context(back, behind, 4).before).toBe('がいい')
+  })
+  it('never parts a kanji from the variation selector written after it at the clip', () => {
+    // The selector, two units of its own, names which of 葛's shapes is drawn:
+    // a clip before it or between its units leaves the 葛 out with it.
+    const at = { edition: 'ja', block: 0, start: 0, end: 2 }
+    const ahead = `ab葛󠄀飾`
+    expect(context(ahead, at, 1).after).toBe('')
+    expect(context(ahead, at, 2).after).toBe('')
+    expect(context(ahead, at, 3).after).toBe('葛󠄀')
+    const behind = { edition: 'ja', block: 0, start: 4, end: 6 }
+    const back = `葛󠄀飾ab`
+    expect(context(back, behind, 3).before).toBe('飾')
+    expect(context(back, behind, 2).before).toBe('飾')
+    expect(context(back, behind, 4).before).toBe('葛󠄀飾')
+  })
 })

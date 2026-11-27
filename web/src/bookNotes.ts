@@ -325,7 +325,12 @@ export function newNote(
 export function excerpt(book: Book, note: Note, length = 80): string {
   const block = book.editions[note.edition]?.blocks[note.slot]?.text ?? ''
   const words = note.text ? block.slice(note.text.start, note.text.end) : block
-  return words.length > length ? `${words.slice(0, length - 1)}…` : words
+  if (words.length <= length) return words
+  // A character is kept whole or left out, never cut before the ellipsis:
+  // one written as two UTF-16 units, as an emoji or a rarer kanji is, and the
+  // marks a font draws as part of it, as a kana's voicing mark or a kanji's
+  // variation selector (`characterCut`), which cut off would change it.
+  return `${words.slice(0, characterCut(words, length - 1))}…`
 }
 
 /** What a selection on the text can become: a run of one block, and where to set the bar that offers it. */
@@ -547,6 +552,12 @@ export function characterEnd(text: string, at: number): number {
     to += (text.codePointAt(to) ?? 0) > 0xffff ? 2 : 1
   } while (to < text.length && markAt(text, to))
   return to
+}
+
+/** Where to cut `text` at UTF-16 offset `at` or before so as to part no character: `at`, or the start of the character it falls in. */
+export function characterCut(text: string, at: number): number {
+  const last = characterStart(text, at)
+  return characterEnd(text, last) > at ? last : at
 }
 
 const isVertical = (style: CSSStyleDeclaration) =>

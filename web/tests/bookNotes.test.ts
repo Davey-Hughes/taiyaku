@@ -335,6 +335,49 @@ describe('what a note marks', () => {
     expect(excerpt(book, note({}), 12)).toBe('Mr. and Mrs…')
     expect(excerpt(book, note({ edition: 'gone' }))).toBe('')
   })
+
+  /** A Japanese book of one block, `text`, and a note on the block. */
+  const japanese = (text: string): [Book, Note] => [
+    {
+      title: 'T',
+      hub: 'ja',
+      editions: {
+        ja: {
+          label: 'Japanese',
+          language: 'ja',
+          blocks: [{ text, heading: false, sentences: [[0, text.length]] }],
+        },
+      },
+      alignments: [],
+    },
+    note({ edition: 'ja', slot: 0 }),
+  ]
+
+  it('never cuts a character written as two UTF-16 units in two', () => {
+    // 𠮟 is two units, the cut's last two: it is left out whole.
+    const [ja, on] = japanese(`${'あ'.repeat(78)}𠮟る${'い'.repeat(20)}`)
+    expect(excerpt(ja, on)).toBe(`${'あ'.repeat(78)}…`)
+    // One unit longer, the cut falls after it, and it is kept whole.
+    expect(excerpt(ja, on, 81)).toBe(`${'あ'.repeat(78)}𠮟…`)
+  })
+
+  it('never cuts a kana from the combining voicing mark written after it', () => {
+    // か and a combining voicing mark are drawn as one が: with the mark the
+    // cut's last unit, the か is left out with it.
+    const [ja, on] = japanese(`${'あ'.repeat(78)}か\u{3099}${'い'.repeat(20)}`)
+    expect(excerpt(ja, on)).toBe(`${'あ'.repeat(78)}…`)
+    // One unit longer, the cut falls after the mark, and both are kept.
+    expect(excerpt(ja, on, 81)).toBe(`${'あ'.repeat(78)}か\u{3099}…`)
+  })
+
+  it('never cuts a kanji from the variation selector written after it', () => {
+    // The selector, two units of its own, names which of 葛's shapes is
+    // drawn: cut before it or between its units, the 葛 is left out with it.
+    const [ja, on] = japanese(`${'あ'.repeat(77)}葛\u{e0100}${'い'.repeat(20)}`)
+    expect(excerpt(ja, on, 79)).toBe(`${'あ'.repeat(77)}…`)
+    expect(excerpt(ja, on)).toBe(`${'あ'.repeat(77)}…`)
+    expect(excerpt(ja, on, 81)).toBe(`${'あ'.repeat(77)}葛\u{e0100}…`)
+  })
 })
 
 describe('words for Anki', () => {
