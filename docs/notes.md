@@ -34131,3 +34131,210 @@ fails only past its build's ceiling and writes a placeholder for each work it
 binds, two bytes each (`?,`): about 66 KB a request at the default of 32766,
 where the row saw it fail at 33000 works, and upward of 500 KB past the
 image's 250000.
+
+## O68 and O123: the request log's transfers and its writer (2026-11-27)
+
+The rows in `docs/status.md` say what changed. Each mutation below was put in
+by hand, run against the tests named, and taken out, and no mutation sweep ran
+for the branch.
+
+**The owner's rulings** of 2026-11-27 are named by letter in the patches'
+README (under `.superpowers/sdd/2026-11-27-duet-five/patches/o68-o123-request-log/`,
+which is not committed): 1a, 2a, 3a and 4a for O68, and 5a on what was
+installed where the branch was written. Under 4a, the web app's files, which
+`ServeDir` streams and which logged `bytes: 0` the same way, are O68's case,
+recorded in its row rather than as an item of their own.
+
+**When hyper lets go of a body.** Read in hyper 1.11's dispatcher and checked
+by the tests below: hyper drops a response body without polling it to its end
+when the body says it has ended (`is_end_stream`, as a `Full` does after its
+one frame), once it has taken every byte a `Content-Length` promised, when the
+client goes away, and when the server stops. Only `Drop` sees all four, so
+`transfer::Counted` writes the line there. An error frame is `error`; a body
+polled to its end, or dropped having taken every promised byte or saying it
+has ended, is `complete`, or `short` below its `Content-Length`; anything else
+is `cut`. axum empties a HEAD's body outside the log layer, so the layer marks
+a HEAD, a 204 and a 304 as sending no body, and each logs `complete` with no
+bytes.
+
+**Handed over is not received.** Hyper drops the body once its last bytes are
+in its own write buffer, which takes another chunk while it holds less than
+`DEFAULT_MAX_BUFFER_SIZE`, about 400 KiB, so several hundred KiB; the
+kernel's socket buffers hold more. The live checks below show the gap: a
+download cut by a stop logged 7,077,888 bytes where `curl` had received
+6,614,207.
+So a download smaller than the buffers can read `complete` though its client
+left, and a `cut` line's count is at least what arrived. Hyper sends no byte
+past a `Content-Length` either, so `bytes` is clamped to it, for a file that
+grew between its head and its read.
+
+**The writer.** A `std::thread`, `taiyaku-reqlog`, takes each line over a
+channel, writes through a `BufWriter`, and flushes whenever its queue runs
+dry, so a quiet server's lines reach the disk one at a time. The
+row suggested the blocking pool; it was not used, because blocking-pool tasks
+run in no set order, so lines would land out of the order they were finished
+in, and tokio drops a blocking task that has not started at a stop, so the
+lines queued then would be lost. `Log::close`, which `serve` calls once the
+server has stopped and the log's `Drop` calls otherwise, holds the queue while
+the thread drains it, so a line finished meanwhile lands after the queued
+ones. It waits at most `REQUEST_LOG_DRAIN`, one second, so a disk that hangs
+costs the lines still queued, and a line on stderr, rather than a stop that
+never ends: with `SHUTDOWN_GRACE`'s five seconds and the CLI's
+`RUNTIME_SHUTDOWN` of two, a stop stays inside `docker stop`'s ten. A line
+finished after `close` is written by whoever finished it, which is where a
+body dropped as the runtime shuts down ends up. After a `close` that gave up,
+the thread it left may still be stuck on the disk that hangs, so a line
+finished while that thread runs is dropped, and no worker waits behind it;
+the close's line on stderr says lines may be lost. Once the thread has
+returned, a line finished later is written again. The CLI asserts at build
+time, summing milliseconds, that the grace, the drain and its runtime bound
+come to less than ten seconds.
+
+**The queue holds at most 4096 lines** (`QUEUE_LINES`), so a disk that hangs
+while the server runs costs lines rather than memory that grows for as long as
+it hangs, which closed O7 rules against. A line finished while the queue is
+full is dropped and counted, and its worker does not wait; once the writer has
+caught up it says on stderr how many lines were lost, once each time. The four
+`panels*.jsonl` session logs in the main checkout, which are not committed,
+logged at most 11 requests in any one second and no line longer than 483
+bytes, so 4096 lines hold a hang of about six minutes at that rate, in about
+2 MB of line text. The whole-branch review found the queue unbounded, as it
+was on this branch until then.
+
+**What the summary's other sections now read.** `in_flight` counts a download
+until its body ends or is dropped, so `request-summary.sh`'s in-flight figures
+over a log written before this change and one written after it measure two
+things, and a mixed log mixes them; the script's "max in-flight" line says so.
+Its "mean page bytes" averages what each page handed over, so a page dropped
+before hyper took its one frame adds 0, where it used to add its whole size; a
+page hyper takes whole reads as before. Its slowest five
+still sort by `micros`, the time to the head, so a slow transfer shows in
+`transfer_micros` and not there.
+
+**The tests, against `main`.** Each of these, ported onto `main`'s code with
+the fixture it needs, failed there:
+
+- `reqlog::tests`' `a_logged_request_is_not_written_by_the_async_worker`,
+  which serves one logged page under `strace` on a current-thread runtime:
+  "the async worker 2560090 wrote the log";
+- `routes::tests`'
+  `a_download_read_to_its_end_logs_its_bytes_and_that_it_completed`
+  and `a_download_read_whole_over_a_socket_logs_complete`: `bytes` `0`
+  against `197608`;
+- `a_download_dropped_after_its_first_chunk_logs_cut`: `outcome` `null`
+  against `"cut"`;
+- `a_head_on_a_download_logs_complete_with_no_bytes`: `outcome` `null`
+  against `"complete"`;
+- `a_request_answered_while_a_download_streams_counts_it_in_flight`:
+  `in_flight` `1` against `2`;
+- `web::tests`' `the_request_log_records_what_the_app_served`: `bytes` `0`
+  against `37`.
+
+`a_page_through_the_logging_router_keeps_its_content_length` passed on `main`,
+as it should: it guards that the counting body keeps a page's exact length.
+The eight tests of `transfer::Counted`, the seven other new `reqlog::tests`
+and `tests`' `serve_returns_once_every_line_finished_before_its_stop_is_written`
+and `serve_stops_within_its_budget_while_the_log_cannot_write` test code
+`main` does not have.
+
+**Mutations.** Put wrong by hand in the code as built, each failed the tests
+named:
+
+- the line written on the async worker: the `strace` test;
+- `close` not waiting for the thread:
+  `closing_the_log_writes_every_queued_line_and_a_later_one_still_lands`, and
+  `serve`'s stop test, in each of three runs;
+- no flush when the queue runs dry: the close test; a flush only when the
+  thread ends: `a_finished_line_reaches_the_disk_by_itself`;
+- a line finished after `close` dropped: the close test;
+- `close` letting go of the queue before it waits:
+  `a_line_finished_while_close_drains_lands_after_every_queued_one`, in each
+  of three runs;
+- `close` waiting with no limit:
+  `a_close_whose_writer_is_stuck_gives_up_at_its_limit`;
+- no `Drop` for `Log`:
+  `dropping_the_log_writes_every_queued_line_before_it_returns`;
+- `serve` not closing the log: `serve`'s stop test, in each of three runs;
+- each frame counted as no bytes: the download, page and web-app tests;
+- a body's end recorded as `cut`, or a dropped stream as `complete`: the
+  download and `transfer` tests for each;
+- no comparison with the `Content-Length`: the `short` test;
+- `Drop` ignoring `is_end_stream`:
+  `a_body_dropped_once_it_says_it_has_ended_logs_complete`; the HEAD rule in
+  the layer: the HEAD test; `sends_body` in `Drop`: the HEAD test and
+  `a_body_that_is_never_sent_logs_complete_when_dropped_unread`;
+- the size hint not forwarded: the page's `Content-Length` test;
+- an error frame not recorded: the `error` test;
+- no rule for a body dropped having taken every promised byte: the socket
+  test and `a_stream_dropped_at_its_promised_length_logs_complete`, in each
+  of three runs;
+- no clamp to the `Content-Length`:
+  `a_stream_longer_than_its_promised_length_counts_only_what_it_promised`;
+- after a `close` that gave up, a late line waiting on the file, the give-up
+  not recorded, every late line dropped, or late lines still dropped once the
+  thread had returned: the stuck-close test, for each;
+- the head's time not carried to the line, or `transfer_micros` taken from
+  it: `a_line_times_the_head_and_the_transfer_apart`, and the cut-download
+  test for the second;
+- the layer reading no time for the head: the cut-download test;
+- `close` waiting an hour rather than `REQUEST_LOG_DRAIN`:
+  `serve_stops_within_its_budget_while_the_log_cannot_write` ("serve was
+  still stopping 6s after its stop");
+- the queue unbounded again, or a full queue making its caller wait:
+  `a_line_finished_while_the_queue_is_full_is_dropped_and_counted` ("0
+  lines dropped", and "queueing waited on the held file" for the second);
+- the writer never saying how many lines were lost: the same test;
+- the report of lost lines never written, or written only when none were
+  lost: `the_loss_report_gives_the_count_once_and_nothing_when_no_line_was_lost`;
+- each line written by its caller: the `strace` test, and the five
+  `reqlog::tests` that hold the file while they queue, each with "queueing
+  waited on the held file" after ten seconds under plain `cargo test`, where
+  they had deadlocked on their own lock before they queued from a thread of
+  their own.
+
+The 204 and 304 rule has no test: no route sends either with a
+`Content-Length`, so taking it out changes no line any route writes. The
+layer took a body's own exact length as its promise when the head set no
+`Content-Length`, and the review found that taking it out left every test
+green; it was taken out, because every body this server sends with no
+`Content-Length` is buffered and says itself when it has ended, which
+`Counted` reads, so it changed no line.
+
+**The live checks.** Where the branch was written, a debug build served a
+scratch library with one 20 MiB member on loopback, with `--log-requests`
+(figures from the patches' README, under
+`.superpowers/sdd/2026-11-27-duet-five/patches/o68-o123-request-log/`, which
+is not committed). The member's download and the OPDS
+mirror's, read whole by `curl`, logged 20,971,529 bytes, `complete`, as `curl`
+counted; a HEAD logged no bytes, `complete`; a `Range` request logged 100,000
+bytes, 206, `complete`; `/api/works` logged its 123 bytes. A download cut by
+`curl --max-time 2` logged `cut` at 5,963,776 bytes, where `curl` had received
+2,318,336, the buffers above. A SIGTERM with a download throttled to 500 KB/s
+open stopped the server about five seconds later, and the download's line,
+`cut` at 10,027,008 bytes with a `transfer_micros` of seven seconds, was
+written after `serve` returned, by the body as it was dropped.
+
+On the owner's workstation, after integration, a debug build of the CLI served
+a scratch library of one 21,101,390-byte CBZ with `--log-requests` (logs under
+`.superpowers/sdd/2026-11-27-duet-five/request-log/live/`, which is not
+committed). A HEAD on its download logged no bytes, `complete`; the download
+read whole logged 21,101,390 bytes, `complete`, as `curl` counted. A SIGTERM
+three seconds into a download throttled to 500 KB/s stopped the process 5.0 s
+later, and the download's line read `cut` at 7,077,888 bytes, where `curl` had
+received 6,614,207. A second run under `strace` showed the `taiyaku-reqlog`
+thread exit as `serve` closed the log, and the download's line written after
+it by a runtime worker as the runtime dropped the body.
+
+**What ran, and what did not.** Where the branch was written,
+`scripts/check-all.sh` could not run whole: neither `cargo-nextest` nor
+`cargo-llvm-cov` was installed there, and `--all-features` needs libarchive.
+On the owner's workstation it ran whole, `--all-features` under
+`cargo llvm-cov nextest` with the per-test timeout, the coverage floors,
+`status-test-count` and the comment guard included, and passed with only the
+standing corpus checks not measured (`gate-2.log` under
+`.superpowers/sdd/2026-11-27-duet-five/request-log/`, which is not committed).
+A download open at a SIGTERM, and a `Range` request's line, were checked only
+by the live checks above: no test runs the CLI with `--log-requests`. No
+device, no Panels session and no NAS saw the change, so what a write costs
+there is still not measured, though it no longer falls on a request's worker,
+and HTTP/2's paths were reasoned about, not run.

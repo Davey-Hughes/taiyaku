@@ -3638,21 +3638,41 @@ pub(crate) fn build_router_serving(
                         Some(((*name).to_string(), value.to_string()))
                     })
                     .collect();
+                let is_head = request.method() == axum::http::Method::HEAD;
                 let started = log.begin(headers);
                 let response = next.run(request).await;
-                let status = response.status().as_u16();
-                // The body's own known length, not the Content-Length
-                // header: axum sets that header when it serialises the
-                // response, which is after this middleware has already
-                // run — so reading the header here reports 0 for every
-                // request, and bytes-per-page is one of the numbers this
-                // log exists to produce.
-                let bytes = {
-                    use axum::body::HttpBody;
-                    response.body().size_hint().exact().unwrap_or(0)
+                // The header, which a download and the app's files set. A
+                // body that comes without one is buffered, and says itself
+                // when it has ended (`is_end_stream`), which `Counted`
+                // reads, so it needs no promise. A HEAD, a 204 and a 304 send
+                // no body, so promise nothing.
+                let status = response.status();
+                let bodiless = matches!(
+                    status,
+                    axum::http::StatusCode::NO_CONTENT | axum::http::StatusCode::NOT_MODIFIED
+                );
+                let sends_body = !(is_head || bodiless);
+                let promised = if sends_body {
+                    response
+                        .headers()
+                        .get(axum::http::header::CONTENT_LENGTH)
+                        .and_then(|value| value.to_str().ok()?.parse().ok())
+                } else {
+                    None
                 };
-                log.finish(started, &method, &path, status, bytes);
-                response
+                // O68: the line is written when the body ends or is dropped,
+                // by the counting body, so it records what was handed over.
+                let head = crate::transfer::Head {
+                    method,
+                    path,
+                    status: status.as_u16(),
+                    micros: started.micros(),
+                    promised,
+                    sends_body,
+                };
+                response.map(|body| {
+                    axum::body::Body::new(crate::transfer::Counted::new(body, log, started, head))
+                })
             }
         },
     ))

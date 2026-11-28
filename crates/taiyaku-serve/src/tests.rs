@@ -489,6 +489,171 @@ async fn serve_binds_the_address_and_answers_on_it() {
     );
 }
 
+/// O123: `serve` does not return while a line finished before its stop is
+/// still waiting to be written. The test holds the log, as a blocking task
+/// still running at a stop holds the server's state, so the log's own `Drop`
+/// cannot write it, and holds its file across the stop, so the writer cannot.
+/// `multi_thread` and the poll are `serve_binds_the_address_and_answers_on_it`'s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_returns_once_every_line_finished_before_its_stop_is_written() {
+    let tmp = crate::test_support::Fixture::new("serve-log-close");
+    let works = vec![crate::test_support::work(&tmp)];
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = probe.local_addr().unwrap().to_string();
+    drop(probe);
+    let path = tmp.join("requests.jsonl");
+    let log = std::sync::Arc::new(crate::reqlog::Log::new(&path).unwrap());
+    let stop = std::sync::Arc::new(tokio::sync::Notify::new());
+
+    let mut serving = tokio::spawn({
+        let options = crate::ServeOptions {
+            addr: addr.clone(),
+            cache: Some(tmp.join("cache")),
+            log: Some(std::sync::Arc::clone(&log)),
+            stop: Some(std::sync::Arc::clone(&stop)),
+            ..crate::ServeOptions::default()
+        };
+        async move {
+            crate::serve(
+                crate::test_support::library(),
+                crate::Works::fixed(works),
+                options,
+            )
+            .await
+        }
+    });
+    let url = format!("http://{addr}/api/works");
+    let ask = |left| {
+        ureq::get(&url)
+            .header(
+                "authorization",
+                crate::test_support::fixture_authorization(),
+            )
+            .config()
+            .timeout_global(Some(left))
+            .build()
+            .call()
+            .map(|mut r| r.body_mut().read_to_string().unwrap_or_default())
+    };
+    first_answer(&serving, ask).await.expect("serve answers");
+
+    let (locked, is_locked) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holding = std::thread::spawn({
+        let log = std::sync::Arc::clone(&log);
+        move || {
+            let held = log.hold_file();
+            let _ = locked.send(());
+            let _ = released.recv();
+            drop(held);
+        }
+    });
+    is_locked.recv().unwrap();
+    first_answer(&serving, ask)
+        .await
+        .expect("serve answers again");
+    stop.notify_one();
+    let returned_while_held =
+        tokio::time::timeout(std::time::Duration::from_millis(150), &mut serving)
+            .await
+            .is_ok();
+    release.send(()).unwrap();
+    holding.join().unwrap();
+    assert!(
+        !returned_while_held,
+        "serve returned while a line finished before its stop was still queued"
+    );
+    serving.await.unwrap().unwrap();
+    let deadline = std::time::Instant::now() + SERVE_ANSWERS_WITHIN;
+    while std::fs::read_to_string(&path).unwrap().lines().count() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "both lines are written"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// O123: a stop whose log cannot write returns within its share of the stop's
+/// budget, [`crate::SHUTDOWN_GRACE`] and [`crate::REQUEST_LOG_DRAIN`], which
+/// the CLI sums inside `docker stop`'s time. The test holds the log's file
+/// across the stop and past that budget, so the writer holds a line it cannot
+/// write, as on a disk that hangs; that `serve` waited the drain first is what
+/// shows it did.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_stops_within_its_budget_while_the_log_cannot_write() {
+    let tmp = crate::test_support::Fixture::new("serve-log-stuck");
+    let works = vec![crate::test_support::work(&tmp)];
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = probe.local_addr().unwrap().to_string();
+    drop(probe);
+    let log = std::sync::Arc::new(crate::reqlog::Log::new(&tmp.join("requests.jsonl")).unwrap());
+    let stop = std::sync::Arc::new(tokio::sync::Notify::new());
+
+    let mut serving = tokio::spawn({
+        let options = crate::ServeOptions {
+            addr: addr.clone(),
+            cache: Some(tmp.join("cache")),
+            log: Some(std::sync::Arc::clone(&log)),
+            stop: Some(std::sync::Arc::clone(&stop)),
+            ..crate::ServeOptions::default()
+        };
+        async move {
+            crate::serve(
+                crate::test_support::library(),
+                crate::Works::fixed(works),
+                options,
+            )
+            .await
+        }
+    });
+    let url = format!("http://{addr}/api/works");
+    let ask = |left| {
+        ureq::get(&url)
+            .header(
+                "authorization",
+                crate::test_support::fixture_authorization(),
+            )
+            .config()
+            .timeout_global(Some(left))
+            .build()
+            .call()
+            .map(|mut r| r.body_mut().read_to_string().unwrap_or_default())
+    };
+    first_answer(&serving, ask).await.expect("serve answers");
+
+    let (locked, is_locked) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holding = std::thread::spawn({
+        let log = std::sync::Arc::clone(&log);
+        move || {
+            let held = log.hold_file();
+            let _ = locked.send(());
+            let _ = released.recv();
+            drop(held);
+        }
+    });
+    is_locked.recv().unwrap();
+    first_answer(&serving, ask)
+        .await
+        .expect("serve answers again");
+    let budget = crate::SHUTDOWN_GRACE + crate::REQUEST_LOG_DRAIN;
+    let stopped = std::time::Instant::now();
+    stop.notify_one();
+    let returned = tokio::time::timeout(budget, &mut serving).await;
+    let took = stopped.elapsed();
+    release.send(()).unwrap();
+    holding.join().unwrap();
+    let served = returned.unwrap_or_else(|_| {
+        panic!("serve was still stopping {budget:?} after its stop, with the log's file held")
+    });
+    served.unwrap().unwrap();
+    assert!(
+        took >= crate::REQUEST_LOG_DRAIN,
+        "serve returned after {took:?}, without waiting for the log, so its writer held no line"
+    );
+}
+
 /// O186: a scan an earlier process cut during its derive reads `interrupted`
 /// by the time `serve` answers, and a finished one keeps its status.
 ///

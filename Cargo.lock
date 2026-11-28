@@ -2707,6 +2707,7 @@ dependencies = [
  "bytes",
  "crc32fast",
  "futures-core",
+ "http-body",
  "image",
  "jxl-bitstream",
  "jxl-color",

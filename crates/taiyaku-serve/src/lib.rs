@@ -62,6 +62,7 @@ pub mod session;
 mod source;
 mod stamp;
 mod stump;
+mod transfer;
 mod truth;
 mod users_api;
 mod view;
@@ -77,7 +78,7 @@ use std::sync::Arc;
 pub use composite::{CompositeSource, StumpSide};
 pub use library_job::{JobGuard, LibraryJob};
 pub use registry::{Refresh, Snapshot, Works};
-pub use reqlog::{Entry, Log};
+pub use reqlog::{Entry, Log, Outcome};
 pub use routes::build_router;
 pub use source::{LocalLibrary, PageSource, ServedPage};
 // `Progress` lives in `taiyaku-library`, where the `state` module needs it;
@@ -452,6 +453,12 @@ pub struct ServeOptions {
     /// runs one of the server's own.
     #[cfg(test)]
     pub(crate) matches: Option<Arc<match_pass::Pass>>,
+    /// A request log a test holds, used where `log_requests` is `None`.
+    #[cfg(test)]
+    pub(crate) log: Option<Arc<reqlog::Log>>,
+    /// Stops the server as a signal would, once notified.
+    #[cfg(test)]
+    pub(crate) stop: Option<Arc<tokio::sync::Notify>>,
 }
 
 /// Says, line by line to `say`, why each directory the server was started with
@@ -481,7 +488,8 @@ pub(crate) fn announce_dirs(dirs: &[std::path::PathBuf], say: &mut dyn FnMut(&st
 /// # Errors
 ///
 /// Returns an error if `log_requests` is `Some` and the file it names cannot
-/// be opened or created (see `reqlog::Log::new`), if binding `addr` fails —
+/// be opened or created, or the log's writer cannot start (see
+/// `reqlog::Log::new`), if binding `addr` fails —
 /// the port already in use, the address not this host's, or a privileged
 /// port without the permission it needs — or if the server's accept loop,
 /// run by `axum::serve`, ends in an I/O error. The bind failure and the
@@ -514,6 +522,10 @@ pub async fn serve(
         pass,
         #[cfg(test)]
         matches,
+        #[cfg(test)]
+            log: held_log,
+        #[cfg(test)]
+            stop: stop_now,
     } = options;
     #[cfg(test)]
     let fingerprints = pass.unwrap_or_else(|| Arc::new(fingerprint_pass::Pass::live()));
@@ -531,6 +543,8 @@ pub async fn serve(
         Some(path) => Some(Arc::new(reqlog::Log::new(&path)?)),
         None => None,
     };
+    #[cfg(test)]
+    let log = log.or(held_log);
 
     // What the background resolution will need, kept aside so it can be
     // started *after* the bind below rather than before it.
@@ -691,6 +705,16 @@ pub async fn serve(
     // Before the bind, so the `listening` line below is never printed while a
     // signal would still kill the process outright.
     let stop = shutdown_signal();
+    #[cfg(test)]
+    let stop = async move {
+        match stop_now {
+            Some(now) => tokio::select! {
+                () = stop => {}
+                () = now.notified() => {}
+            },
+            None => stop.await,
+        }
+    };
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("{addr}: {e}"))?;
@@ -743,6 +767,7 @@ pub async fn serve(
     // resolved, the server gets [`SHUTDOWN_GRACE`] and then `serve` returns
     // whatever is still open.
     let (stopping, stop_began) = tokio::sync::oneshot::channel::<()>();
+    let log = state.log.clone();
     let server = axum::serve(
         listener,
         crate::routes::build_router_serving(state, web.as_deref())
@@ -761,7 +786,7 @@ pub async fn serve(
         let _ = stop_began.await;
         tokio::time::sleep(SHUTDOWN_GRACE).await;
     };
-    tokio::select! {
+    let served = tokio::select! {
         outcome = server => outcome.map_err(|e| format!("{addr}: {e}")),
         () = grace_over => {
             // Not `eprintln!`, which panics when nothing reads stderr, and
@@ -773,7 +798,14 @@ pub async fn serve(
             );
             Ok(())
         }
+    };
+    // O123: every line already finished is on disk when `serve` returns, or
+    // [`REQUEST_LOG_DRAIN`] has passed. A body still streaming is dropped as
+    // the runtime shuts down, after this, and writes its own line.
+    if let Some(log) = log {
+        log.close();
     }
+    served
 }
 
 /// How long [`serve`] lets open connections finish after a stop signal before
@@ -782,6 +814,11 @@ pub async fn serve(
 /// Chosen to leave room, with the caller's own bound on its runtime, inside
 /// the time `docker stop` allows before it kills the container.
 pub const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long [`serve`], once the server has stopped, waits for the request log
+/// to write the lines already finished, before it returns regardless. It
+/// counts with [`SHUTDOWN_GRACE`] inside the time `docker stop` allows.
+pub const REQUEST_LOG_DRAIN: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Resolves when the process is asked to stop: SIGTERM, which `docker stop`
 /// sends, or SIGINT.

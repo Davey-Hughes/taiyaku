@@ -1326,9 +1326,19 @@ fn serve(args: &[String]) -> Result<(), String> {
 }
 
 /// How long a stopping server waits for blocking tasks before it exits anyway.
-/// Added to `taiyaku_serve::SHUTDOWN_GRACE`, it must stay inside the container
-/// runtime's stop timeout.
+/// Added to `taiyaku_serve::SHUTDOWN_GRACE` and `REQUEST_LOG_DRAIN`, it must
+/// stay inside the container runtime's stop timeout.
 const RUNTIME_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(2);
+
+// `docker stop`'s default timeout is ten seconds. Summed in milliseconds, as
+// whole seconds would round each wait down.
+const _: () = assert!(
+    taiyaku_serve::SHUTDOWN_GRACE.as_millis()
+        + taiyaku_serve::REQUEST_LOG_DRAIN.as_millis()
+        + RUNTIME_SHUTDOWN.as_millis()
+        < 10_000,
+    "a stopping server's waits add up to docker stop's ten seconds or more"
+);
 
 /// What `serve` puts in `taiyaku_serve::ServeOptions`, read from its flags and
 /// from `environment`, which is the process's own in `serve` and a fixed table

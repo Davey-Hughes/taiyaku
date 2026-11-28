@@ -13,10 +13,10 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::Write as _;
+use std::io::{BufWriter, Write as _};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -58,18 +58,30 @@ pub struct Entry {
     /// would make it look like no client ever asks for a `?width=…`.
     pub path: String,
     pub status: u16,
+    /// Body bytes handed to hyper, which is not what the client received:
+    /// hyper drops the body once its last bytes are in its write buffer,
+    /// several hundred KiB, and the kernel's socket buffers hold more. A
+    /// download smaller than those can read `complete` though its client
+    /// left, and a `cut` line's count is at least what arrived (O68).
     pub bytes: u64,
+    /// How the body ended. See [`Outcome`].
+    pub outcome: Outcome,
+    /// Microseconds from arrival to the response head.
     pub micros: u64,
+    /// Microseconds from arrival to the line: the body's end, or the moment
+    /// it was dropped.
+    pub transfer_micros: u64,
     /// Unix microseconds when the request arrived.
     ///
-    /// Lines are appended in *completion* order, so adjacency in the file is
+    /// Lines are appended in the order bodies end, so adjacency in the file is
     /// not arrival order. This is what lets a re-request 200ms later (no
     /// caching) be told apart from one 20 minutes later (expiry), and lets
     /// page-turn cadence and burst boundaries be reconstructed at all —
-    /// together with `micros` and `in_flight`, the whole in-flight timeline
-    /// is recoverable offline.
+    /// together with `transfer_micros` and `in_flight`, the whole in-flight
+    /// timeline is recoverable offline.
     pub started_at: u64,
-    /// Requests in flight at the instant this one arrived, counting itself.
+    /// Requests in flight at the instant this one arrived, counting itself. A
+    /// request is in flight from its arrival until its body ends or is dropped.
     ///
     /// 1 means it arrived alone; the peak of a burst is `max` over the
     /// burst. In-flight only rises at arrivals, so a burst's peak is
@@ -83,6 +95,32 @@ pub struct Entry {
     /// shape and a `jq` expression does not have to guard on the key's
     /// existence as well as the header's.
     pub headers: BTreeMap<String, String>,
+}
+
+/// How a response body ended, which is what tells a finished download from
+/// an abandoned one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Outcome {
+    /// Every byte it promised was handed over, or it promised none and
+    /// reached its end. A HEAD, a 204 and a 304 send no body, and are this.
+    Complete,
+    /// Dropped before its end: the client went away, or the server stopped.
+    Cut,
+    /// Ended cleanly with fewer bytes than its `Content-Length`, as a
+    /// download does when its producer gives up without its error landing.
+    Short,
+    /// The body yielded an error, and the response stopped there.
+    Error,
+}
+
+/// What a body sent, as the counting body saw it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sent {
+    pub bytes: u64,
+    pub outcome: Outcome,
+    /// [`Entry::micros`], read when the head was ready.
+    pub micros: u64,
 }
 
 impl Entry {
@@ -113,8 +151,8 @@ impl Entry {
 ///
 /// Holds the count rather than leaving `Log::finish` to release it, because
 /// `finish` is not the only way a request stops being in flight — a client
-/// cancelling a prefetch on a fast page turn, or the response future simply
-/// being dropped, never runs it. `Drop` is the one place a departure is
+/// that cancels a prefetch before its response is ready drops the response
+/// future, which never runs it. `Drop` is the one place a departure is
 /// guaranteed to be seen, so it is the one place that decrements, whether
 /// the request finished or was abandoned.
 #[derive(Debug)]
@@ -130,6 +168,14 @@ pub struct InFlight {
     /// and `share` — and by the time the response comes back, the request
     /// they came from is gone.
     headers: BTreeMap<String, String>,
+}
+
+impl InFlight {
+    /// Microseconds since the request arrived, saturating.
+    #[must_use]
+    pub fn micros(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_micros()).unwrap_or(u64::MAX)
+    }
 }
 
 impl Drop for InFlight {
@@ -149,14 +195,141 @@ impl Drop for InFlight {
 #[derive(Debug)]
 pub struct Log {
     in_flight: Arc<AtomicU64>,
+    /// Shared with the writer thread, and written here directly once that
+    /// thread is gone, so a line finished after [`Log::close`] still lands.
+    out: Arc<Out>,
+    /// `None` once [`Log::close`] has run, whether or not the queue drained.
+    writer: Mutex<Option<Writer>>,
+    /// Set by a [`Log::close`] that gave up: the thread it left, which may be
+    /// stuck on a disk that hangs, disconnects this as it returns.
+    abandoned: Mutex<Option<mpsc::Receiver<()>>>,
+}
+
+/// The thread that writes the lines, and the queue that feeds it. O123: a line
+/// is written here, never by the async worker that served the request.
+///
+/// **A `std::thread`, not `spawn_blocking`.** Blocking-pool tasks run in no
+/// set order, so lines would land out of the order they were finished in,
+/// and tokio shuts down a blocking task that has not started rather than
+/// running it, so the lines queued at a stop would be lost. One thread and one
+/// channel keep the order and let [`Log::close`] drain the queue.
+#[derive(Debug)]
+struct Writer {
+    /// Holds at most [`QUEUE_LINES`].
+    lines: mpsc::SyncSender<Message>,
+    /// Disconnects as the thread returns or unwinds, which [`Log::close`] can
+    /// wait on with a deadline, as it cannot on a join.
+    gone: mpsc::Receiver<()>,
+}
+
+/// How many finished lines may wait for the writer. A line finished while the
+/// queue is full is dropped and counted rather than held, so a disk that hangs
+/// while the server runs costs lines, not memory that grows for as long as it
+/// hangs (O7), and no worker waits on it. Large enough that a hang of minutes
+/// at the request rates a measurement session sees loses nothing (`notes.md`,
+/// "O68 and O123").
+const QUEUE_LINES: usize = 4096;
+
+#[derive(Debug)]
+enum Message {
+    Line(String),
+    /// Answered once every line sent before it is on disk.
+    #[cfg(test)]
+    Flush(mpsc::Sender<()>),
+}
+
+/// The destination file, its warn-once flag, and the lines a full queue
+/// dropped.
+#[derive(Debug)]
+struct Out {
     /// Opened once, at construction, rather than reopened on every write: a
     /// destination that cannot be opened is a startup failure the caller can
     /// act on, not a silently empty file discovered after an hour of reading
     /// on an iPad.
-    file: Mutex<File>,
+    file: Mutex<BufWriter<File>>,
     /// Set after the first failed write, so a struggling disk earns one
     /// message on stderr rather than one per request.
     write_failed: AtomicBool,
+    /// Lines dropped because the queue was full, since the writer last said
+    /// how many: once each time it catches up, not once a line.
+    lost: AtomicU64,
+}
+
+impl Out {
+    fn lock(&self) -> MutexGuard<'_, BufWriter<File>> {
+        self.file.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self, file: &mut BufWriter<File>, line: &str) {
+        if let Err(e) = file.write_all(line.as_bytes()) {
+            self.failed(&e);
+        }
+    }
+
+    fn flush(&self, file: &mut BufWriter<File>) {
+        if let Err(e) = file.flush() {
+            self.failed(&e);
+        }
+    }
+
+    /// `writeln!` and not `eprintln!`, which panics when stderr is closed: a
+    /// panic here would end the writer thread.
+    fn failed(&self, e: &std::io::Error) {
+        if self.first_write_failure() {
+            let _ = writeln!(std::io::stderr(), "taiyaku: request log write failed: {e}");
+        }
+    }
+
+    /// Says on `stderr` how many lines a full queue dropped since it last
+    /// said, if any. `writeln!` for the reason [`Out::failed`] gives. Takes
+    /// the stream so a test can read what it says.
+    fn say_lost(&self, stderr: &mut impl std::io::Write) {
+        let lost = self.lost.swap(0, Ordering::SeqCst);
+        if lost > 0 {
+            let _ = writeln!(
+                stderr,
+                "taiyaku: the request log fell behind its disk and lost {lost} lines"
+            );
+        }
+    }
+
+    /// True once, for the first write failure only.
+    ///
+    /// A full disk fails *every* subsequent write, and a line of stderr per
+    /// request would bury whatever the operator was actually reading. Named
+    /// rather than left inline as `!self.write_failed.swap(true, …)` because
+    /// the `!` is the whole behaviour, and the difference between "warn once"
+    /// and "warn on every failure after the first" is not something a test of
+    /// the log's *contents* can see.
+    fn first_write_failure(&self) -> bool {
+        !self.write_failed.swap(true, Ordering::SeqCst)
+    }
+}
+
+/// The writer thread's loop: everything queued is written, and the file is
+/// flushed whenever the queue runs dry, so a quiet server's lines reach the
+/// disk one by one and a busy one's go in batches; then it says how many lines
+/// a full queue dropped meanwhile. A kill loses what was still queued and what
+/// sat unflushed. Returns once every sender is gone and the queue is empty.
+fn write_lines(queue: &mpsc::Receiver<Message>, out: &Out) {
+    while let Ok(first) = queue.recv() {
+        let mut file = out.lock();
+        let mut next = Some(first);
+        while let Some(message) = next {
+            match message {
+                Message::Line(line) => out.write(&mut file, &line),
+                #[cfg(test)]
+                Message::Flush(done) => {
+                    out.flush(&mut file);
+                    let _ = done.send(());
+                }
+            }
+            next = queue.try_recv().ok();
+        }
+        out.flush(&mut file);
+        drop(file);
+        out.say_lost(&mut std::io::stderr());
+    }
 }
 
 impl Log {
@@ -173,17 +346,37 @@ impl Log {
     /// Returns an error, worded `--log-requests {path}: {e}`, if `path`
     /// cannot be opened for appending and cannot be created — most often
     /// because a parent directory does not exist, or because the process
-    /// lacks permission to write there.
+    /// lacks permission to write there — or if the thread that writes the
+    /// lines cannot be started.
     pub fn new(path: &Path) -> Result<Self, String> {
+        let named = |e: std::io::Error| format!("--log-requests {}: {e}", path.display());
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
-            .map_err(|e| format!("--log-requests {}: {e}", path.display()))?;
+            .map_err(named)?;
+        let out = Arc::new(Out {
+            file: Mutex::new(BufWriter::new(file)),
+            write_failed: AtomicBool::new(false),
+            lost: AtomicU64::new(0),
+        });
+        let (lines, queue) = mpsc::sync_channel(QUEUE_LINES);
+        let (going, gone) = mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("taiyaku-reqlog".into())
+            .spawn({
+                let out = Arc::clone(&out);
+                move || {
+                    let _going = going;
+                    write_lines(&queue, &out);
+                }
+            })
+            .map_err(named)?;
         Ok(Self {
             in_flight: Arc::new(AtomicU64::new(0)),
-            file: Mutex::new(file),
-            write_failed: AtomicBool::new(false),
+            out,
+            abandoned: Mutex::new(None),
+            writer: Mutex::new(Some(Writer { lines, gone })),
         })
     }
 
@@ -206,7 +399,7 @@ impl Log {
         }
     }
 
-    /// A request finished normally and is recorded.
+    /// A request's body ended, or was dropped, and the request is recorded.
     ///
     /// Never called for a cancelled request — there is nothing to record for
     /// one that never produced a response. `request`'s share of the
@@ -221,57 +414,149 @@ impl Log {
     /// `InFlight::drop` — and so the in-flight decrement — happen whenever the
     /// caller's own binding later goes out of scope, not at the point this
     /// function returns. Taking `request` by value moves it into this call so
-    /// its `Drop` runs here, at the moment the response is actually recorded,
-    /// which is what keeps the decrement synchronised with the write below
-    /// rather than merely eventual.
+    /// its `Drop` runs here, once the line is handed to the writer, which is
+    /// what keeps the decrement synchronised with the line rather than merely
+    /// eventual.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "InFlight is consumed for its Drop timing, not its fields (see doc comment \
                   above): taking it by value is what makes the in-flight counter release \
                   exactly when this function returns, rather than whenever the caller's local \
                   variable happens to go out of scope. Tried a &InFlight signature first; it \
-                  compiles, but silently detaches the decrement from the write it is meant to \
+                  compiles, but silently detaches the decrement from the line it is meant to \
                   be synchronised with, which is the defect Drop was written to prevent."
     )]
-    pub fn finish(&self, request: InFlight, method: &str, path: &str, status: u16, bytes: u64) {
+    pub fn finish(&self, request: InFlight, method: &str, path: &str, status: u16, sent: Sent) {
         let entry = Entry {
             method: method.to_string(),
             path: path.to_string(),
             status,
-            bytes,
-            micros: u64::try_from(request.started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            bytes: sent.bytes,
+            outcome: sent.outcome,
+            micros: sent.micros,
+            transfer_micros: request.micros(),
             started_at: request.started_at,
             in_flight: request.share,
             headers: request.headers.clone(),
         };
-        let line = entry.to_json_line();
-        let mut guard = self
-            .file
+        self.write(entry.to_json_line());
+    }
+
+    /// Hands `line` to the writer thread, or writes it here: after
+    /// [`Log::close`], which is where the bodies dropped as the runtime shuts
+    /// down end up, or if the thread has died. A line finished while the queue
+    /// is full is dropped and counted, and the writer says how many once it
+    /// catches up. While a thread that a close gave up on still runs, the line
+    /// is dropped, so no worker waits behind it on a disk that hangs; the close
+    /// said on stderr that lines may be lost.
+    fn write(&self, line: String) {
+        let writer = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let line = match writer.as_ref() {
+            Some(writer) => match writer.lines.try_send(Message::Line(line)) {
+                Ok(()) => return,
+                Err(mpsc::TrySendError::Full(_)) => {
+                    self.out.lost.fetch_add(1, Ordering::SeqCst);
+                    return;
+                }
+                Err(mpsc::TrySendError::Disconnected(Message::Line(line))) => line,
+                #[cfg(test)]
+                Err(mpsc::TrySendError::Disconnected(Message::Flush(_))) => return,
+            },
+            None => line,
+        };
+        drop(writer);
+        if self.abandoned_thread_runs() {
+            return;
+        }
+        let mut file = self.out.lock();
+        self.out.write(&mut file, &line);
+        self.out.flush(&mut file);
+    }
+
+    /// Writes every line already finished, flushes, and stops the writer
+    /// thread, waiting at most [`crate::REQUEST_LOG_DRAIN`]; a line finished
+    /// afterwards is written by its caller. `serve` calls this as it returns,
+    /// and `Drop` calls it for every other way a `Log` goes away.
+    ///
+    /// Holds the queue's lock until the thread has drained, so a line
+    /// finished meanwhile waits and lands after the queued ones, in order.
+    pub fn close(&self) {
+        self.close_within(crate::REQUEST_LOG_DRAIN);
+    }
+
+    /// [`Log::close`], waiting at most `limit`. A disk that hangs costs the
+    /// lines still queued, not a stop that never ends. True if the thread
+    /// drained the queue.
+    pub(crate) fn close_within(&self, limit: std::time::Duration) -> bool {
+        let mut writer = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(Writer { lines, gone }) = writer.take() else {
+            return true;
+        };
+        drop(lines);
+        if let Err(mpsc::RecvTimeoutError::Timeout) = gone.recv_timeout(limit) {
+            *self.abandoned() = Some(gone);
+            let _ = writeln!(
+                std::io::stderr(),
+                "taiyaku: the request log was still writing after {limit:?}; the lines not yet \
+                 written, and those finished until it is done, may be lost"
+            );
+            return false;
+        }
+        true
+    }
+
+    fn abandoned(&self) -> MutexGuard<'_, Option<mpsc::Receiver<()>>> {
+        self.abandoned
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Err(e) = guard.write_all(line.as_bytes())
-            && self.first_write_failure()
-        {
-            eprintln!("taiyaku: request log write failed: {e}");
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// True while the thread a [`Log::close`] gave up on has not returned.
+    fn abandoned_thread_runs(&self) -> bool {
+        let mut abandoned = self.abandoned();
+        match abandoned.as_ref().map(mpsc::Receiver::try_recv) {
+            None => false,
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                *abandoned = None;
+                false
+            }
+            Some(_) => true,
         }
     }
 
-    /// True once, for the first write failure only.
-    ///
-    /// A full disk fails *every* subsequent write, and a line of stderr per
-    /// request would bury whatever the operator was actually reading. Named
-    /// rather than left inline as `!self.write_failed.swap(true, …)` because
-    /// the `!` is the whole behaviour, and the difference between "warn once"
-    /// and "warn on every failure after the first" is not something a test of
-    /// the log's *contents* can see.
-    fn first_write_failure(&self) -> bool {
-        !self.write_failed.swap(true, Ordering::SeqCst)
+    /// The file, held, so the writer can write nothing until the guard goes.
+    #[cfg(test)]
+    pub(crate) fn hold_file(&self) -> MutexGuard<'_, BufWriter<File>> {
+        self.out.lock()
+    }
+
+    /// Returns once every line finished before this call is on disk, so a
+    /// test can read the file.
+    #[cfg(test)]
+    pub(crate) fn flush(&self) {
+        let (done, flushed) = mpsc::channel();
+        {
+            let writer = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(writer) = writer.as_ref() else {
+                return;
+            };
+            if writer.lines.send(Message::Flush(done)).is_err() {
+                return;
+            }
+        }
+        let _ = flushed.recv();
+    }
+}
+
+impl Drop for Log {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
 /// Microseconds since `UNIX_EPOCH`, narrowed from `Duration::as_micros`'s `u128`.
 ///
-/// Saturates rather than panics, matching `finish`'s narrowing of
+/// Saturates rather than panics, matching `InFlight::micros`'s narrowing of
 /// `Instant::elapsed()`'s `as_micros()` above
 /// (`u64::try_from(..).unwrap_or(u64::MAX)`) — deliberately, even though the
 /// two narrowings look like they should differ. `elapsed()` is measured against

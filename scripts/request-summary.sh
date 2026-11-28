@@ -9,6 +9,11 @@ log="${1:?usage: request-summary.sh <log.jsonl>}"
 [ -s "$log" ] || { echo "error: $log is empty or missing" >&2; exit 1; }
 
 echo "requests:            $(wc -l < "$log")"
+# A request is in flight until its body ends or is dropped (O68), so a download
+# still streaming counts in the figure of every request that arrives meanwhile;
+# a log written before O68 counted a request only until its head. "mean page
+# bytes" averages what each page handed over, so a page dropped before hyper
+# took it adds less than its size.
 echo "max in-flight:       $(jq -s 'map(.in_flight) | max' "$log")"
 echo "mean page bytes:     $(jq -s '[.[] | select(.path | test("/pages/")) | .bytes] | if length == 0 then 0 else (add / length | floor) end' "$log")"
 echo "page requests:       $(jq -s '[.[] | select(.path | test("/pages/"))] | length' "$log")"
@@ -54,6 +59,21 @@ echo "clients seen:"
 jq -s -r '
   [.[] | .headers["user-agent"] // "(not recorded)"]
   | group_by(.) | map({ua: .[0], n: length}) | sort_by(-.n) | .[] | "  \(.n)  \(.ua)"
+' "$log"
+echo
+# O68: a download's line says how its body ended. Logs written before the
+# outcome was recorded have no `.outcome`, and read as "(not recorded)". A
+# HEAD sends no body and a refusal no download, so neither counts. A Range
+# request's piece is a 206, listed apart: a client that reads in pieces logs
+# a line for each.
+echo "downloads by status and outcome (count, status, outcome, bytes handed over):"
+jq -s -r '
+  [.[] | select(.method != "HEAD" and (.status == 200 or .status == 206)
+                and (.path | split("?")[0] | endswith("/download")))]
+  | if length == 0 then "  none" else
+      group_by([.status, .outcome // "(not recorded)"])
+      | .[] | "  \(length)  \(.[0].status)  \(.[0].outcome // "(not recorded)")  \(map(.bytes) | add)"
+    end
 ' "$log"
 echo
 echo "slowest five:"

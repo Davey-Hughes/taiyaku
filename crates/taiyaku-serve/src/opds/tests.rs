@@ -1044,7 +1044,12 @@ fn feed_on_a_current_thread_runtime(dir: &std::path::Path, members: &[(&str, &st
         .enable_all()
         .on_thread_start({
             let started = Arc::clone(&started);
-            move || started.lock().unwrap().push(this_thread())
+            move || {
+                started
+                    .lock()
+                    .unwrap()
+                    .push(crate::test_support::this_thread())
+            }
         })
         .build()
         .expect("a current-thread runtime");
@@ -1078,7 +1083,7 @@ fn feed_on_a_current_thread_runtime(dir: &std::path::Path, members: &[(&str, &st
     )]);
     let state = Arc::new(state);
 
-    let async_worker = this_thread();
+    let async_worker = crate::test_support::this_thread();
     let body = runtime.block_on(async {
         let response =
             crate::opds::work_feed(State(state), AxPath("t".to_string()), as_an_administrator())
@@ -1105,19 +1110,6 @@ fn feed_on_a_current_thread_runtime(dir: &std::path::Path, members: &[(&str, &st
         let _ = writeln!(threads, "blocking {thread}");
     }
     std::fs::write(dir.join("threads"), threads).unwrap();
-}
-
-/// This thread's id as the kernel numbers it, which is what `strace -f`
-/// prints at the head of each line: `/proc/thread-self` links to
-/// `<pid>/task/<tid>`.
-#[cfg(target_os = "linux")]
-fn this_thread() -> String {
-    std::fs::read_link("/proc/thread-self")
-        .expect("reading /proc/thread-self")
-        .file_name()
-        .expect("a thread id")
-        .to_string_lossy()
-        .into_owned()
 }
 
 /// The ids of the threads that made a `stat`-family call naming `target`, from

@@ -2440,7 +2440,7 @@ async fn a_page_fetch_through_the_router_logs_a_line_with_real_byte_count() {
     let mut state = crate::test_support::state(&tmp);
     let tmp2 = crate::test_support::Fixture::new("routes-reqlog");
     let (log, log_path) = crate::test_support::log(&tmp2);
-    state.log = Some(log);
+    state.log = Some(Arc::clone(&log));
     let app = build_router(Arc::new(state));
 
     let page = app
@@ -2456,7 +2456,7 @@ async fn a_page_fetch_through_the_router_logs_a_line_with_real_byte_count() {
         .await
         .unwrap();
 
-    let entries = crate::test_support::logged_lines(&log_path);
+    let entries = crate::test_support::logged_lines(&log, &log_path);
     let _ = std::fs::remove_file(&log_path);
     assert_eq!(entries.len(), 1, "exactly one request went through");
     let entry = &entries[0];
@@ -2472,7 +2472,236 @@ async fn a_page_fetch_through_the_router_logs_a_line_with_real_byte_count() {
         entry["bytes"].as_u64().unwrap() > 0,
         "a page is never a zero-byte response"
     );
+    assert_eq!(entry["outcome"], "complete");
     assert_eq!(entry["in_flight"], 1, "a lone request arrived alone");
+}
+
+/// O68's fixture: a router logging to its own file, serving one work whose
+/// one member is `len` bytes, so its download takes several chunks.
+fn a_logged_download_of(
+    tmp: &crate::test_support::Fixture,
+    len: usize,
+) -> (axum::Router, Arc<crate::Log>, std::path::PathBuf) {
+    let member: Vec<u8> = (0..len).map(|n| (n % 251) as u8).collect();
+    std::fs::write(tmp.join("v.pdf"), &member).unwrap();
+    let json = r#"{
+      "taiyaku": 1,
+      "work": { "title": "T", "reading": "rtl" },
+      "editions": { "raw": { "label": "Raw", "members": [
+        { "path": "v.pdf", "sha256": "x", "pages": 1 }
+      ], "spreads": [] } },
+      "hub": "raw",
+      "alignments": []
+    }"#;
+    let sidecar = tmp.join("taiyaku.json");
+    std::fs::write(&sidecar, json).unwrap();
+    let mut state = crate::test_support::state(tmp);
+    state.works = crate::Works::fixed(vec![crate::Work::new(
+        "t".into(),
+        sidecar,
+        taiyaku_core::Sidecar::from_json(json).unwrap(),
+    )]);
+    let (log, log_path) = crate::test_support::log(tmp);
+    state.log = Some(Arc::clone(&log));
+    (build_router(Arc::new(state)), log, log_path)
+}
+
+/// Bigger than one of the download's chunks, so a body can be cut between them.
+const A_FEW_CHUNKS: usize = 3 * 64 * 1024 + 1000;
+
+/// O68: a download read to its end logs every byte the client got, and
+/// that it got all of them, though its body is streamed.
+#[tokio::test]
+async fn a_download_read_to_its_end_logs_its_bytes_and_that_it_completed() {
+    let tmp = crate::test_support::Fixture::new("routes-reqlog-download");
+    let (router, log, log_path) = a_logged_download_of(&tmp, A_FEW_CHUNKS);
+
+    let response = crate::test_support::get(&router, "/api/works/t/raw/members/0/download").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(body.len(), A_FEW_CHUNKS);
+
+    let entries = crate::test_support::logged_lines(&log, &log_path);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["bytes"], A_FEW_CHUNKS as u64);
+    assert_eq!(entries[0]["outcome"], "complete");
+}
+
+/// O68, through hyper rather than `oneshot`: hyper stops polling a body once
+/// it has taken the length the head promised, so a download read whole
+/// over a socket is dropped before its stream says it has ended, and must
+/// still log `complete`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_download_read_whole_over_a_socket_logs_complete() {
+    let tmp = crate::test_support::Fixture::new("routes-reqlog-socket");
+    let (router, log, log_path) = a_logged_download_of(&tmp, A_FEW_CHUNKS);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let serving = tokio::spawn(async move { axum::serve(listener, router).await });
+
+    let answer = tokio::task::spawn_blocking(move || {
+        use std::io::{Read as _, Write as _};
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client
+            .write_all(
+                b"GET /api/works/t/raw/members/0/download HTTP/1.1\r\n\
+                  Host: t\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).unwrap();
+        answer
+    })
+    .await
+    .unwrap();
+    assert!(answer.starts_with(b"HTTP/1.1 200"), "{:?}", &answer[..40]);
+    let head = answer.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    assert_eq!(
+        answer.len() - head,
+        A_FEW_CHUNKS,
+        "the whole member arrived"
+    );
+
+    // The connection closes just after hyper drops the body; wait for its line.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let entries = loop {
+        let entries = crate::test_support::logged_lines(&log, &log_path);
+        if !entries.is_empty() || std::time::Instant::now() > deadline {
+            break entries;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    serving.abort();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0]["bytes"], A_FEW_CHUNKS as u64);
+    assert_eq!(entries[0]["outcome"], "complete");
+}
+
+/// O68: a download the client walks away from after its first chunk logs
+/// `cut`, with what had been handed over by then: more than nothing and less
+/// than the whole.
+#[tokio::test]
+async fn a_download_dropped_after_its_first_chunk_logs_cut() {
+    let tmp = crate::test_support::Fixture::new("routes-reqlog-cut");
+    let (router, log, log_path) = a_logged_download_of(&tmp, A_FEW_CHUNKS);
+
+    let response = crate::test_support::get(&router, "/api/works/t/raw/members/0/download").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    let first = std::future::poll_fn(|cx| {
+        use axum::body::HttpBody;
+        std::pin::Pin::new(&mut body).poll_frame(cx)
+    })
+    .await
+    .expect("a first frame")
+    .expect("not an error");
+    assert!(first.is_data());
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    drop(body);
+
+    let entries = crate::test_support::logged_lines(&log, &log_path);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["outcome"], "cut");
+    let bytes = entries[0]["bytes"].as_u64().unwrap();
+    assert!(
+        bytes > 0 && bytes < A_FEW_CHUNKS as u64,
+        "what was handed over before the cut, not 0 and not the whole: {bytes}"
+    );
+    let head = entries[0]["micros"].as_u64().unwrap();
+    let transfer = entries[0]["transfer_micros"].as_u64().unwrap();
+    assert!(head > 0, "the head took some time to make");
+    assert!(
+        transfer >= head + 20_000,
+        "the transfer ran on past its head: {head} then {transfer}"
+    );
+}
+
+/// O68: a request is in flight until its body is done with, so a request
+/// answered while a download streams arrived second.
+#[tokio::test]
+async fn a_request_answered_while_a_download_streams_counts_it_in_flight() {
+    let tmp = crate::test_support::Fixture::new("routes-reqlog-in-flight");
+    let (router, log, log_path) = a_logged_download_of(&tmp, A_FEW_CHUNKS);
+
+    let streaming = crate::test_support::get(&router, "/api/works/t/raw/members/0/download").await;
+    assert_eq!(streaming.status(), StatusCode::OK);
+    let page = crate::test_support::get(&router, "/api/works").await;
+    assert_eq!(page.status(), StatusCode::OK);
+    axum::body::to_bytes(page.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    drop(streaming);
+
+    let entries = crate::test_support::logged_lines(&log, &log_path);
+    let in_flight = |path: &str| {
+        entries
+            .iter()
+            .find(|entry| entry["path"] == path)
+            .unwrap_or_else(|| panic!("no line for {path}: {entries:?}"))["in_flight"]
+            .clone()
+    };
+    assert_eq!(in_flight("/api/works"), 2);
+    assert_eq!(in_flight("/api/works/t/raw/members/0/download"), 1);
+}
+
+/// A HEAD sends no body, so it is complete at 0 bytes, not cut and not
+/// short of its `Content-Length`.
+#[tokio::test]
+async fn a_head_on_a_download_logs_complete_with_no_bytes() {
+    let tmp = crate::test_support::Fixture::new("routes-reqlog-head");
+    let (router, log, log_path) = a_logged_download_of(&tmp, A_FEW_CHUNKS);
+
+    let response = router
+        .oneshot(
+            Request::head("/api/works/t/raw/members/0/download")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert!(body.is_empty());
+
+    let entries = crate::test_support::logged_lines(&log, &log_path);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["method"], "HEAD");
+    assert_eq!(entries[0]["bytes"], 0);
+    assert_eq!(entries[0]["outcome"], "complete");
+}
+
+/// The counting body forwards the length it wraps, so a page through the
+/// logging router still says how long it is.
+#[tokio::test]
+async fn a_page_through_the_logging_router_keeps_its_content_length() {
+    let tmp = crate::test_support::Fixture::new("routes-reqlog-length");
+    let mut state = crate::test_support::state(&tmp);
+    let tmp2 = crate::test_support::Fixture::new("routes-reqlog-length");
+    let (log, _) = crate::test_support::log(&tmp2);
+    state.log = Some(log);
+    let app = build_router(Arc::new(state));
+
+    let page = app
+        .oneshot(
+            Request::get("/api/works/t/raw/pages/2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.status(), StatusCode::OK);
+    let length = {
+        use axum::body::HttpBody;
+        page.body().size_hint().exact()
+    };
+    let body = axum::body::to_bytes(page.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(length, Some(body.len() as u64));
 }
 
 /// O1's question — does a client ever send `If-None-Match`? — cannot be
@@ -2491,7 +2720,7 @@ async fn a_conditional_request_header_is_logged_and_an_unlisted_one_is_not() {
     let mut state = crate::test_support::state(&tmp);
     let tmp2 = crate::test_support::Fixture::new("routes-reqlog-headers");
     let (log, log_path) = crate::test_support::log(&tmp2);
-    state.log = Some(log);
+    state.log = Some(Arc::clone(&log));
     let app = build_router(Arc::new(state));
 
     let page = app
@@ -2506,8 +2735,10 @@ async fn a_conditional_request_header_is_logged_and_an_unlisted_one_is_not() {
         .await
         .unwrap();
     assert_eq!(page.status(), StatusCode::OK);
+    // The line is written when the body goes.
+    drop(page);
 
-    let entries = crate::test_support::logged_lines(&log_path);
+    let entries = crate::test_support::logged_lines(&log, &log_path);
     let _ = std::fs::remove_file(&log_path);
     assert_eq!(entries.len(), 1);
     let headers = &entries[0]["headers"];
@@ -2530,7 +2761,7 @@ async fn a_request_with_a_query_string_is_logged_with_it() {
     let mut state = crate::test_support::state(&tmp);
     let tmp2 = crate::test_support::Fixture::new("routes-reqlog-query");
     let (log, log_path) = crate::test_support::log(&tmp2);
-    state.log = Some(log);
+    state.log = Some(Arc::clone(&log));
     let app = build_router(Arc::new(state));
 
     let page = app
@@ -2542,8 +2773,9 @@ async fn a_request_with_a_query_string_is_logged_with_it() {
         .await
         .unwrap();
     assert_eq!(page.status(), StatusCode::OK);
+    drop(page);
 
-    let entries = crate::test_support::logged_lines(&log_path);
+    let entries = crate::test_support::logged_lines(&log, &log_path);
     let _ = std::fs::remove_file(&log_path);
     assert_eq!(entries.len(), 1);
     assert_eq!(

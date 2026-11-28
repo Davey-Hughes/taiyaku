@@ -1005,7 +1005,7 @@ pub(crate) fn log(dir: &std::path::Path) -> (std::sync::Arc<crate::Log>, std::pa
     (log, path)
 }
 
-/// The lines a log wrote, parsed.
+/// The lines `log` wrote to `path`, parsed, once all it finished is on disk.
 ///
 /// Tests read the *file* rather than an in-memory copy, because the file
 /// is the only artefact anything outside this crate consumes —
@@ -1016,7 +1016,8 @@ pub(crate) fn log(dir: &std::path::Path) -> (std::sync::Arc<crate::Log>, std::pa
 /// Parsed as `Value` rather than back into `Entry` so the test is checking
 /// the wire format a `jq` script sees, not a round trip through the same
 /// struct definition that wrote it.
-pub(crate) fn logged_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
+pub(crate) fn logged_lines(log: &crate::Log, path: &std::path::Path) -> Vec<serde_json::Value> {
+    log.flush();
     std::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
@@ -1025,6 +1026,19 @@ pub(crate) fn logged_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
                 .unwrap_or_else(|e| panic!("log line must parse as JSON: {e}: {line}"))
         })
         .collect()
+}
+
+/// This thread's id as the kernel numbers it, which is what `strace -f`
+/// prints at the head of each line: `/proc/thread-self` links to
+/// `<pid>/task/<tid>`.
+#[cfg(target_os = "linux")]
+pub(crate) fn this_thread() -> String {
+    std::fs::read_link("/proc/thread-self")
+        .expect("reading /proc/thread-self")
+        .file_name()
+        .expect("a thread id")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Every `Work` in `library`, built the way `taiyaku-cli`'s `serve_work`

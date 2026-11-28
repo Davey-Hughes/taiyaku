@@ -215,21 +215,28 @@ async fn every_answer_the_app_serves_carries_the_security_headers() {
     }
 }
 
-/// `--log-requests` sees what the app served, not only the API.
+/// `--log-requests` sees what the app served, not only the API, and how
+/// much of it, though the app's files are streamed (O68).
 #[tokio::test]
 async fn the_request_log_records_what_the_app_served() {
     let tmp = Fixture::new("web-log");
     let dist = built_app(&tmp);
-    let log_path = tmp.join("requests.jsonl");
+    let (log, log_path) = crate::test_support::log(&tmp);
     let mut served = state(&tmp);
-    served.log = Some(Arc::new(
-        crate::reqlog::Log::new(&log_path).expect("opens the log"),
-    ));
+    served.log = Some(Arc::clone(&log));
     let response = build_router_serving(Arc::new(served), Some(&dist))
         .oneshot(Request::get("/read/some-work").body(Body::empty()).unwrap())
         .await
         .expect("answers");
     assert_eq!(response.status(), StatusCode::OK);
-    let logged = std::fs::read_to_string(&log_path).expect("the log was written");
-    assert!(logged.contains("\"path\":\"/read/some-work\""), "{logged}");
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("the body");
+    assert_eq!(body.len(), INDEX.len(), "the app's page");
+
+    let logged = crate::test_support::logged_lines(&log, &log_path);
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert_eq!(logged[0]["path"], "/read/some-work");
+    assert_eq!(logged[0]["bytes"], INDEX.len() as u64);
+    assert_eq!(logged[0]["outcome"], "complete");
 }

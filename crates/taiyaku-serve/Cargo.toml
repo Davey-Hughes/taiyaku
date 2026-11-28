@@ -28,6 +28,11 @@ bytes = "1.12.1"
 # resolver unifies one copy rather than two.
 crc32fast = "1.5.0"
 futures-core = "0.3.33"
+# Already in the dependency tree via axum and hyper — named directly here only
+# so `transfer.rs` can implement the response body trait, whose `Frame` axum
+# does not re-export. Same version the tree resolves to, so the resolver
+# unifies one copy rather than two.
+http-body = "1.1.0"
 image = "0.25.9"
 # Already in the dependency tree via jxl-oxide — named directly here only so
 # `jxl.rs` can read a `jbrd` box's header and find the compressed stream after
