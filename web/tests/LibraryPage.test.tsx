@@ -3575,6 +3575,94 @@ describe('LibraryPage, the fingerprint pass', () => {
     expect(holdOf(button(host, 'cancel-pass'))).toBe('free')
     expect(passLine(host)).toBe('Fingerprinting pages · 120 of 2,097 files')
   })
+
+  /**
+   * Each button a person can reach named `name`, in the order drawn: none in
+   * the header's inert set, which is not seen.
+   */
+  const reachable = (host: HTMLElement, name: string) =>
+    [...host.querySelectorAll('button')].filter(
+      (b) => b.closest('[inert]') === null && b.textContent === name,
+    )
+
+  /** The words of the line a button is described by, if it has one. */
+  const describedBy = (b: Element) =>
+    document.getElementById(b.getAttribute('aria-describedby') ?? '')
+      ?.textContent
+
+  it('after Scan library’s Cancel is answered cancelling and the scan ends finished all the same, draws the fingerprint pass its end started with a free Cancel of its own that cancels the pass', async () => {
+    // Cancel pressed as the job finishes: the server answers 202, but the job
+    // ends finished, and only a finished scan's end starts the pass.
+    feed.answer(
+      runningFeed(
+        feedJob({ step: 'finishing', done: null, of: null, dir: null }),
+      ),
+    )
+    const { host } = await shown()
+    await clock(0)
+    const [scanCancel, ...others] = reachable(host, 'Cancel')
+    expect(others).toEqual([])
+    expect(scanCancel.getAttribute('name')).toBe('scan-library')
+
+    await press(scanCancel)
+    await clock(0)
+    expect(feed.cancels).toEqual([7])
+    expect(scanLines(host)).toEqual(['Cancelling…'])
+    expect(holdOf(button(host, 'scan-library'))).toBe('held')
+
+    // The scan's end moves the marker; a finished job is in no answer, so the
+    // pass is listed alone, not cancelling.
+    feed.answer({ ended: 1, libraries: [], jobs: [fingerprintPass()] })
+    await clock(config.SCAN_POLL_MS)
+    expect(scanLines(host)).toEqual([])
+    expect([
+      button(host, 'scan-library').textContent,
+      holdOf(button(host, 'scan-library')),
+    ]).toEqual(['Scan library', 'free'])
+    const cancels = reachable(host, 'Cancel')
+    expect(
+      cancels.map((b) => [b.getAttribute('name'), holdOf(b), describedBy(b)]),
+    ).toEqual([
+      ['cancel-pass', 'free', 'Fingerprinting pages · 120 of 2,097 files'],
+    ])
+
+    await press(cancels[0])
+    await clock(0)
+    expect(feed.cancels).toEqual([7, 12])
+    expect(passLine(host)).toBe('Cancelling…')
+    expect(holdOf(button(host, 'cancel-pass'))).toBe('held')
+  })
+
+  it('while Scan library’s Cancel is cancelling a scan, leaves a pass listed beside it free, and the pass’s Cancel cancels the pass’s job', async () => {
+    // A pass already running as the scan is cancelled: a pass is never in
+    // the libraries the feed holds.
+    feed.answer({
+      ended: 0,
+      libraries: [{ id: 7, step: 'resolving' }],
+      jobs: [feedJob(), fingerprintPass()],
+    })
+    const { host } = await shown()
+    await clock(0)
+    await press(button(host, 'scan-library'))
+    await clock(0)
+    // Scan library's Cancel stops the scans holding the library alone.
+    expect(feed.cancels).toEqual([7])
+    expect(scanLines(host)).toEqual(['Cancelling…'])
+    expect(passLine(host)).toBe('Fingerprinting pages · 120 of 2,097 files')
+    const cancels = reachable(host, 'Cancel')
+    expect(
+      cancels.map((b) => [b.getAttribute('name'), holdOf(b), describedBy(b)]),
+    ).toEqual([
+      ['scan-library', 'held', undefined],
+      ['cancel-pass', 'free', 'Fingerprinting pages · 120 of 2,097 files'],
+    ])
+
+    await press(cancels[1])
+    await clock(0)
+    expect(feed.cancels).toEqual([7, 12])
+    expect(passLine(host)).toBe('Cancelling…')
+    expect(holdOf(button(host, 'cancel-pass'))).toBe('held')
+  })
 })
 
 describe('LibraryPage, the match pass', () => {
