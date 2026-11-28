@@ -1,10 +1,15 @@
 /**
  * The Library view's reads: the address each names, the client call it
- * makes through the module a test mocks, its wait for the progress saves,
- * and the prefixes that cover them.
+ * makes through the module a test mocks, its wait for the progress saves and
+ * that wait's bound, and the prefixes that cover them.
  */
 import { afterEach, describe, expect, it, type Mock, vi } from 'vitest'
-import { progressSaved, putProgress } from '../src/api'
+import {
+  OPENING_SAVE_WAIT_MS,
+  progressSaved,
+  progressSavesOut,
+  putProgress,
+} from '../src/api'
 import * as library from '../src/library'
 import {
   gridRead,
@@ -22,6 +27,7 @@ import {
   readSet,
   subscribe,
 } from '../src/reads'
+import { SCAN_END_HOLD_MS } from '../src/scanFeed'
 import { deferred } from './support/async'
 import { address, keptSplitEditions } from './support/reads'
 
@@ -41,11 +47,13 @@ const subscriptions: (() => void)[] = []
 const held: ReturnType<typeof deferred<Response>>[] = []
 
 afterEach(async () => {
+  vi.useRealTimers()
   for (const off of subscriptions.splice(0)) off()
   for (const save of held.splice(0)) {
     save.resolve(new Response(null, { status: 204 }))
   }
   await progressSaved()
+  await landed()
   emptyReads()
   vi.unstubAllGlobals()
   vi.resetAllMocks()
@@ -53,6 +61,18 @@ afterEach(async () => {
 
 /** Lets every request already settled run its handlers. */
 const landed = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+/** Answers every `fetch` with a response held open in `held`. */
+function holdEveryFetch() {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() => {
+      const answer = deferred<Response>()
+      held.push(answer)
+      return answer.promise
+    }),
+  )
+}
 
 /** The client functions the four reads call, mocked above. */
 const clients = {
@@ -161,16 +181,9 @@ describe('the Library view’s reads', () => {
   )
 
   it.each(factories)(
-    '$name calls its client function only once a progress save sent before it has settled',
+    '$name calls its client function only once a progress save sent before it has settled, within the bound',
     async (f) => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(() => {
-          const answer = deferred<Response>()
-          held.push(answer)
-          return answer.promise
-        }),
-      )
+      holdEveryFetch()
       const sent = putProgress('w', { edition: 'raw', slot: 1 })
       const answer = { from: f.name }
       mocked(f.client).mockResolvedValue(answer)
@@ -181,11 +194,47 @@ describe('the Library view’s reads', () => {
 
       held[0].resolve(new Response(null, { status: 204 }))
       await sent
+      await landed()
+      expect(mocked(f.client)).toHaveBeenCalledOnce()
       await expect(got).resolves.toBe(answer)
       expect(mocked(f.client)).toHaveBeenCalledOnce()
       expect(mocked(f.client)).toHaveBeenCalledWith(...f.args)
     },
   )
+
+  // The save is held past the bound and answered only once the read has
+  // answered, so the case sees what its late landing does.
+  it.each(factories)(
+    '$name calls its client function at OPENING_SAVE_WAIT_MS though a progress save sent before it is still out, and not again when the save lands',
+    async (f) => {
+      holdEveryFetch()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      void putProgress('w', { edition: 'raw', slot: 1 })
+      const answer = { from: f.name }
+      mocked(f.client).mockResolvedValue(answer)
+      subscriptions.push(subscribe(f.read().address, () => undefined))
+
+      const read = readSet([f.read()])
+      await vi.advanceTimersByTimeAsync(OPENING_SAVE_WAIT_MS - 1)
+      expect(mocked(f.client)).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect(mocked(f.client)).toHaveBeenCalledOnce()
+      expect(mocked(f.client)).toHaveBeenCalledWith(...f.args)
+      await read
+      expect(entryOf(f.read())?.answer).toBe(answer)
+      expect(progressSavesOut()).toBe(1)
+
+      held[0].resolve(new Response(null, { status: 204 }))
+      await progressSaved()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mocked(f.client)).toHaveBeenCalledOnce()
+    },
+  )
+
+  it('waits for progress saves for less time than a scan’s end is held for its reads', () => {
+    expect(OPENING_SAVE_WAIT_MS).toBeLessThan(SCAN_END_HOLD_MS)
+  })
 
   it('keeps a series opened from a library apart from the same series of every library', async () => {
     vi.mocked(library.oneSeries).mockImplementation((_id, narrowed) =>

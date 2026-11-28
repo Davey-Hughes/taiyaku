@@ -40,7 +40,8 @@ sort or the chosen edition. After this:
   edit; corrected while building, §6.4) marks them stale, so the next
   arrival waits rather than draw what the app knows is wrong. Reading
   progress marks nothing; the re-read after reading waits for the reader's
-  last progress save to answer.
+  last progress save to answer. *Since 2026-11-28 it waits two seconds at
+  most (§3.3, O435).*
 - **Not restored:** a series page's open volume panel, which follows hover
   and focus in one of its modes. A rotation or resize between leaving and
   returning can land the scroll on different rows.
@@ -55,6 +56,7 @@ sort or the chosen edition. After this:
 3. **After reading, draw, then update** (§1): the return draws the kept rows
    and the quiet re-read moves them once, over marking them stale so the
    return waits. The re-read waits for the last progress save (§3.3).
+   *Since 2026-11-28, two seconds at most (O435).*
 4. **The reader's way out goes to its work's series page** (§5.2), once
    the reader knows it: a step back where that page is the entry under the
    reader's, else that page in the reader's place. The reader puts the page
@@ -115,7 +117,10 @@ sort or the chosen edition. After this:
    reads of the grid, home, a series and a search wait for it to settle
    before they send. A save that fails settles too; one that hangs holds
    the re-read, while what is kept stays drawn, and a first visit's read as
-   well (§10).
+   well (§10). *Since 2026-11-28 the wait stops at `OPENING_SAVE_WAIT_MS`,
+   two seconds, the readers' own bound, and the read goes anyway, so a save
+   that hangs holds neither for longer; a read at the bound may answer with
+   the place from before that save (O435).*
 
 The new addresses are factories in `pageReads.ts`, as `libraryScan(id)` is:
 one each for the grid and home of a library, a series, and a search. Each
@@ -408,6 +413,8 @@ the phone bar's is the same link.
    `seriesRead` and `searchRead`) waits for the saves out before it sends,
    whether or not anything is kept, so a first visit after a save that does
    not answer draws "Loading…" for as long as the save is out (§3.3).
+   *Since 2026-11-28 such a save holds the read two seconds at most, and
+   the read then goes (O435).*
 2. **After heavy image use, Back can draw the grid before its covers**
    (O230, to be investigated). In the live check in Chromium, Back drew the
    grid at its kept scroll with most of its covers not yet complete, and

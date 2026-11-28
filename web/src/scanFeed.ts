@@ -146,9 +146,9 @@ export const FEED_IDLE_MS = 5000
  * idle poll's interval: a scan that starts and ends between two idle polls is
  * already seen that late, so a read that never answers delays the end by no
  * more than the feed's own slack. Only a read silent this long meets the
- * bound, held by the Library views' wait for progress saves (O435) or a
- * stalled network; a shorter bound would take the scan off a page before a
- * slow re-read that does answer has landed.
+ * bound, held by a stalled network, since the Library views' wait for
+ * progress saves stops at `OPENING_SAVE_WAIT_MS`; a shorter bound would take
+ * the scan off a page before a slow re-read that does answer has landed.
  */
 export const SCAN_END_HOLD_MS = FEED_IDLE_MS
 

@@ -12,7 +12,12 @@
  * than sending the `GET` itself.
  */
 import { about } from './about'
-import { listKeys, listSessions, progressSaved } from './api'
+import {
+  listKeys,
+  listSessions,
+  OPENING_SAVE_WAIT_MS,
+  progressSavedWithin,
+} from './api'
 import { listBackups } from './backup'
 import { listRoots } from './config'
 import { listProposals } from './curation'
@@ -36,44 +41,47 @@ export const LIBRARY_STATUS = read('/api/library/status', () => status())
 export const libraryScan = (id: number) =>
   read(`/api/library/libraries/${id}/scan`, () => libraryScanStatus(id))
 
-// The four reads of the Library views each wait for the progress saves sent
-// before them: a read sent as the reader closes would otherwise answer with
-// the position from before its last page turn, and since a progress save
-// marks nothing stale, the view drawn from that answer would not be read
-// again to correct it.
+/**
+ * `client`'s answer, asked for once the progress saves sent before the call
+ * have settled, or once `OPENING_SAVE_WAIT_MS` has passed, as the readers
+ * wait. A read sent as the reader closes would otherwise answer with the
+ * position from before its last page turn, and since a progress save marks
+ * nothing stale, the view drawn from that answer would not be read again to
+ * correct it. The bound accepts that: a save the network holds open must not
+ * keep a view on its wait, so a view read at the bound may draw the place
+ * before that save until the next arrival at it reads again.
+ */
+async function afterSaves<T>(client: () => Promise<T>): Promise<T> {
+  await progressSavedWithin(OPENING_SAVE_WAIT_MS)
+  return client()
+}
 
 /** A library's series grid, or every library's: the Library view's grid. */
 export const gridRead = (library: number | undefined) =>
-  read(narrowedTo('/api/library/series', library), async () => {
-    await progressSaved()
-    return grid(library)
-  })
+  read(narrowedTo('/api/library/series', library), () =>
+    afterSaves(() => grid(library)),
+  )
 
 /** A library's Continue and Recently added lists, or every library's. */
 export const homeRead = (library: number | undefined) =>
-  read(narrowedTo('/api/library/home', library), async () => {
-    await progressSaved()
-    return home(library)
-  })
+  read(narrowedTo('/api/library/home', library), () =>
+    afterSaves(() => home(library)),
+  )
 
 /**
  * Series `id` and its works, or only what `library` holds of them: a series
  * page's body. The two are separate entries, as their addresses are.
  */
 export const seriesRead = (id: number, library?: number) =>
-  read(narrowedTo(`/api/library/series/${id}`, library), async () => {
-    await progressSaved()
-    return oneSeries(id, library)
-  })
+  read(narrowedTo(`/api/library/series/${id}`, library), () =>
+    afterSaves(() => oneSeries(id, library)),
+  )
 
 /** The hits for `q` in a library, or in every library: search's body. */
 export const searchRead = (q: string, library: number | undefined) =>
   read(
     narrowedTo(`/api/library/search?q=${encodeURIComponent(q)}`, library),
-    async () => {
-      await progressSaved()
-      return search(q, library)
-    },
+    () => afterSaves(() => search(q, library)),
   )
 
 /**

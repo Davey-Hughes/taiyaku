@@ -559,19 +559,23 @@ const savesOut = new Set<Promise<void>>()
 
 /**
  * Settles once every progress save sent before the call has settled; never
- * rejects. The Library view's reads wait on it, so a read after reading
- * answers with the position just saved rather than the one before it; a
- * failed save has nothing more to wait for, and a save sent after the call
- * is not this read's to wait for.
+ * rejects. A reader as it opens and the Library views' reads wait on it,
+ * through `progressSavedWithin`, so a read after reading answers with the
+ * position just saved, where that save settles within the bound, rather than
+ * the one before it; a failed save has nothing more to wait for, and a save
+ * sent after the call is not this read's to wait for.
  */
 export async function progressSaved(): Promise<void> {
   await Promise.allSettled([...savesOut])
 }
 
 /**
- * How long a reader opening waits for the progress saves still out before it
- * reads its place anyway: a save the network holds open, as a half-open
- * connection can, must not keep the reader from opening.
+ * How long a reader opening, or a Library view's read (`pageReads.ts`), waits
+ * for the progress saves still out before it reads anyway: a save the network
+ * holds open, as a half-open connection can, must not keep the reader from
+ * opening or a view on its wait. It stays under `scanFeed.ts`'s
+ * `SCAN_END_HOLD_MS`, so a held save alone delays a scan's end by this and a
+ * round trip, rather than holding it to that cap.
  */
 export const OPENING_SAVE_WAIT_MS = 2000
 
