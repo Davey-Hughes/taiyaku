@@ -577,6 +577,7 @@ mod walk {
     #[test]
     fn a_walk_gives_each_entry_its_own_checksum() {
         let mut checked = 0;
+        let mut hashed = 0;
         // Headers encrypted: the walk has nothing of its entries to give.
         for fixture in fixtures().into_iter().filter(|f| !f.entries.is_empty()) {
             let at = fixture.file.as_str();
@@ -603,11 +604,25 @@ mod walk {
             assert_eq!(Some(walked.headers.len()), kept, "{at}");
             let solid = matches!(at, "rar5-solid.rar" | "rar5-solid-empty.rar");
             assert_eq!(walked.solid, solid, "{at}");
+            assert_eq!(walked.rar4, fixture.format == "rar4", "{at}");
             for (header, entry) in walked.headers.iter().zip(&fixture.entries) {
                 let at = format!("{at}: {}", entry.name);
                 match entry.kind {
+                    // rar -htb writes a BLAKE2sp hash in place of the CRC32.
+                    // The read below is held to it, so a hash the walk took
+                    // from elsewhere in the header would fail it too.
                     RarEntryKind::File if at.starts_with("rar5-blake2.rar") => {
                         assert_eq!(header.crc, None, "{at}: BLAKE2 alone");
+                        let read = BACKENDS[0].read(&fixture.path, &entry.name);
+                        let read = read.unwrap_or_else(|e| panic!("{at}: {e}"));
+                        let want = blake2s_simd::blake2sp::blake2sp(&read);
+                        assert_eq!(
+                            header.blake2.as_deref().map(Vec::from),
+                            Some(want.as_bytes().to_vec()),
+                            "{at}"
+                        );
+                        assert_eq!(header.size, entry.size, "{at}");
+                        hashed += 1;
                     }
                     RarEntryKind::File if fixture.refused.is_some() => {
                         assert!(header.crc.is_some(), "{at}");
@@ -628,6 +643,9 @@ mod walk {
                     | RarEntryKind::Reference
                     | RarEntryKind::Split => assert_eq!(header.crc, None, "{at}"),
                 }
+                if !at.starts_with("rar5-blake2.rar") {
+                    assert_eq!(header.blake2, None, "{at}: no BLAKE2 hash");
+                }
                 assert_eq!(
                     header.target.is_some(),
                     entry.kind == RarEntryKind::Reference,
@@ -636,6 +654,7 @@ mod walk {
             }
         }
         assert!(checked > 0, "no entry's checksum was compared");
+        assert!(hashed > 0, "no entry's BLAKE2 hash was compared");
     }
 
     #[test]
@@ -646,6 +665,7 @@ mod walk {
             Some("it does not start with a RAR signature")
         );
         assert!(walked.headers.is_empty());
+        assert!(!walked.rar4, "no RAR4 either");
     }
 
     /// A cut anywhere leaves the headers before it, and a file cut inside a
@@ -791,6 +811,7 @@ mod walk {
             size: 5,
             crc: Some(0x1234_5678),
             target: None,
+            blake2: None,
         };
         let with_flag = |flag: u8| {
             let block = rar5_block(2, 0x02 | flag, &rar5_file_fields(&[]));
@@ -800,9 +821,18 @@ mod walk {
             size: 5,
             crc: None,
             target: None,
+            blake2: None,
         };
-        assert_eq!(with_flag(0x10), [starts, whole], "goes on into the next");
-        assert_eq!(with_flag(0x08), [whole], "continued from the previous");
+        assert_eq!(
+            with_flag(0x10),
+            [starts, whole.clone()],
+            "goes on into the next"
+        );
+        assert_eq!(
+            with_flag(0x08),
+            std::slice::from_ref(&whole),
+            "continued from the previous"
+        );
         assert_eq!(with_flag(0x18), [whole], "continued and going on");
     }
 
@@ -834,24 +864,16 @@ mod walk {
             size: 5,
             crc: Some(0x1234_5678),
             target: None,
+            blake2: None,
         };
-        assert_eq!(plain.headers, [want]);
+        assert_eq!(plain.headers, std::slice::from_ref(&want));
         assert_eq!(plain.stopped, None);
 
-        // Records of two bytes: a size of 1, then the type. Type 1,
+        // A record of two bytes: a size of 1, then the type, 3, a time record
+        // whose fields libarchive reads and this walk does not need. Type 1,
         // encryption, stops the walk instead.
-        for (kind, crc) in [(2, Some(0x1234_5678)), (3, Some(0x1234_5678))] {
-            let walked = walked(&rar5(&[rar5_file(&[1, kind]), rar5_end()]));
-            assert_eq!(
-                walked.headers,
-                [Header {
-                    size: 5,
-                    crc,
-                    target: None,
-                }],
-                "record type {kind}"
-            );
-        }
+        let timed = walked(&rar5(&[rar5_file(&[1, 3]), rar5_end()]));
+        assert_eq!(timed.headers, [want], "record type 3");
         // Type 5, redirection: the entry is a link, so its bytes are not its own.
         let linked = walked(&rar5(&[
             rar5_file(&redirect(UNIX_SYMLINK, b'z')),
@@ -861,11 +883,29 @@ mod walk {
             size: 5,
             crc: None,
             target: None,
+            blake2: None,
         };
         assert_eq!(linked.headers, [unchecked], "a symbolic link");
-        // The last two: a redirection record of its type alone, and one whose
-        // name runs past it.
-        let broken: [&[u8]; 5] = [&[0, 0], &[5, 1], &[0x80], &[1, 5], &[4, 5, 4, 0, 1]];
+        // The fourth and fifth: a redirection record of its type alone, and one
+        // whose name runs past it. The last five: a hash record of its type
+        // alone, one cut inside its hash, one of a hash type libarchive refuses
+        // as it lists, one whose hash type does not fit it, and one with a byte
+        // after its hash, which libarchive reads as the next record's start.
+        let short = hash_record(BLAKE2SP, &[7; 31]);
+        let unknown = hash_record(1, &[7; 32]);
+        let long = hash_record(BLAKE2SP, &[7; 33]);
+        let broken: [&[u8]; 10] = [
+            &[0, 0],
+            &[5, 1],
+            &[0x80],
+            &[1, 5],
+            &[4, 5, 4, 0, 1],
+            &[1, 2],
+            &short,
+            &unknown,
+            &[2, 2, 0x80],
+            &long,
+        ];
         for broken in broken {
             let walked = walked(&rar5(&[rar5_file(broken), rar5_end()]));
             assert_eq!(
@@ -874,6 +914,96 @@ mod walk {
                 "{broken:?}"
             );
         }
+    }
+
+    /// RAR5's file hash type for BLAKE2sp, the only one libarchive lists.
+    const BLAKE2SP: u8 = 0;
+
+    /// A file hash record of hash type `kind` holding `hash`: its size, then
+    /// its type (2), the hash type and the hash.
+    fn hash_record(kind: u8, hash: &[u8]) -> Vec<u8> {
+        let size = u8::try_from(2 + hash.len()).expect("a small record");
+        let mut record = vec![size, 2, kind];
+        record.extend_from_slice(hash);
+        record
+    }
+
+    /// A file made with `rar -htb` declares its BLAKE2sp hash in a record of
+    /// its extra area, which applies to its bytes by the CRC32's own rule:
+    /// none for a link, a reference or the part of a file a volume holds.
+    #[test]
+    fn a_rar5_hash_record_gives_its_blake2_hash_by_the_crc32s_rule() {
+        let hash: [u8; 32] = std::array::from_fn(|at| u8::try_from(at).expect("under 32"));
+        let record = hash_record(BLAKE2SP, &hash);
+        let hashed = Header {
+            size: 5,
+            crc: Some(0x1234_5678),
+            target: None,
+            blake2: Some(Box::new(hash)),
+        };
+        let file = walked(&rar5(&[rar5_file(&record), rar5_end()]));
+        assert_eq!(
+            (file.headers, file.stopped),
+            (vec![hashed.clone()], None),
+            "a file"
+        );
+        // With no CRC32 too, as rar -htb writes it.
+        let mut fields = rar5_file_fields(&record);
+        fields[RAR5_FILE_FLAGS + 1] &= !0x04;
+        fields.drain(RAR5_MODE + 4..RAR5_MODE + 8);
+        let alone = walked(&rar5(&[rar5_block(2, 0x03, &fields), rar5_end()]));
+        let want = Header {
+            crc: None,
+            ..hashed.clone()
+        };
+        assert_eq!(alone.headers, [want], "BLAKE2 alone");
+        // Beside a record of another type, either side of it.
+        for extra in [
+            [&[1, 3], &record[..]].concat(),
+            [&record[..], &[1, 3]].concat(),
+        ] {
+            let got = walked(&rar5(&[rar5_file(&extra), rar5_end()]));
+            assert_eq!(got.headers, std::slice::from_ref(&hashed), "{extra:?}");
+        }
+
+        let unchecked = Header {
+            crc: None,
+            blake2: None,
+            ..hashed
+        };
+        let linked = [&record[..], &redirect(UNIX_SYMLINK, b'z')].concat();
+        let got = walked(&rar5(&[rar5_file(&linked), rar5_end()]));
+        assert_eq!(
+            got.headers,
+            std::slice::from_ref(&unchecked),
+            "a symbolic link"
+        );
+        let mut symlink = rar5_file_fields(&record);
+        symlink[RAR5_MODE + 1..RAR5_MODE + 4].copy_from_slice(&[0xff, 0xc3, 0x02]); // 0o120777
+        let got = walked(&rar5(&[rar5_block(2, 0x03, &symlink), rar5_end()]));
+        assert_eq!(
+            got.headers,
+            std::slice::from_ref(&unchecked),
+            "a symbolic link by its mode"
+        );
+        let split = rar5_block(2, 0x13, &rar5_file_fields(&record));
+        let got = walked(&rar5(&[split, rar5_end()]));
+        assert_eq!(
+            got.headers,
+            std::slice::from_ref(&unchecked),
+            "goes on into the next volume"
+        );
+        let copied = [&record[..], &redirect(FILE_COPY, b'a')].concat();
+        let got = walked(&rar5(&[
+            rar5_named(b'a', &[]),
+            rar5_named(b'b', &copied),
+            rar5_end(),
+        ]));
+        let reference = Header {
+            target: Some(0),
+            ..unchecked
+        };
+        assert_eq!(got.headers[1], reference, "a reference");
     }
 
     #[test]
@@ -984,6 +1114,7 @@ mod walk {
                 size: 5,
                 crc,
                 target: None,
+                blake2: None,
             }]
         };
         assert_eq!(
@@ -1048,6 +1179,69 @@ mod walk {
         );
     }
 
+    /// `block` with `name` after its fields, its sizes made to fit.
+    fn rar4_named(mut block: Vec<u8>, name: &[u8]) -> Vec<u8> {
+        let size = u16::try_from(block.len() + name.len()).expect("a name that fits a header");
+        block[5..7].copy_from_slice(&size.to_le_bytes());
+        let name_size = u16::try_from(name.len()).expect("a name that fits a header");
+        block[26..28].copy_from_slice(&name_size.to_le_bytes());
+        block.extend(name);
+        block
+    }
+
+    /// libarchive turns a RAR4 name's every 0x5C into `/` unless the name has
+    /// a Unicode form, and in a legacy code page one after a byte above 0x7F
+    /// may be half of a character instead: Shift-JIS's 表 is 95 5C.
+    #[test]
+    fn a_rar4_name_whose_backslash_may_be_half_a_character_stops_the_walk() {
+        const AMBIGUOUS: Option<&str> = Some(
+            "an entry's name, in a legacy code page, holds a byte that may be half of a character or a path separator",
+        );
+        const UNICODE: u16 = 0x0200;
+        let stopped = |block: Vec<u8>| walked(&rar4(&[block])).stopped;
+        let named = |flags, name: &[u8]| stopped(rar4_named(rar4_file(flags, 0, None), name));
+
+        assert_eq!(named(0, b"\x95\\.png"), AMBIGUOUS);
+        assert_eq!(named(0, b"p\x80\\.png"), AMBIGUOUS);
+        // A zero byte ends a name with no Unicode flag, and what follows it is
+        // no Unicode name.
+        assert_eq!(named(0, b"\x95\\.png\0\x01"), AMBIGUOUS);
+        assert_eq!(named(0x02, b"p\xff\\.png"), AMBIGUOUS, "a split entry");
+        // Bytes that happen to be UTF-8 may still be Shift-JIS: C2 95 5C is
+        // "ﾂ表" there, and E3 81 95 5C "縺表".
+        assert_eq!(named(0, b"\xc2\x95\\.png"), AMBIGUOUS);
+        assert_eq!(named(0, "\u{3055}\\.png".as_bytes()), AMBIGUOUS);
+        let large = rar4_named(rar4_file(0, 0, Some(0)), b"\x95\\.png");
+        assert_eq!(stopped(large), AMBIGUOUS, "after a large header's sizes");
+        // A name past the first 512 bytes the walk reads of a header.
+        let long = [&[b'a'; 600][..], b"\x95\\.png"].concat();
+        assert_eq!(named(0, &long), AMBIGUOUS, "a long name");
+
+        // Under the Unicode flag the name is Unicode, whether a Unicode name
+        // follows a zero byte or the stored name is UTF-8, where 0x5C is no
+        // half of a character; libarchive refuses one that is not UTF-8 itself.
+        for (flags, name) in [
+            (UNICODE, &b"\x95\\.png\0\x01"[..]),
+            (UNICODE, "\u{8868}\\.png".as_bytes()),
+            (UNICODE, b"\x95\\.png"),
+            (0, b"a\\\x80.png"),
+            (0, b"\\\x80.png"),
+            (0, b"\x95\0\x95\\.png"),
+            (0, b"\x95.png"),
+            (0, b"p\x7f\\.png"),
+            (0, &[&[b'a'; 600][..], b"\\.png"].concat()),
+        ] {
+            assert_eq!(named(flags, name), None, "{flags:#x} {name:x?}");
+        }
+
+        // A name that runs past its header, which libarchive refuses too.
+        let mut past = rar4_named(rar4_file(0, 0, None), b"p.png");
+        past[26..28].copy_from_slice(&6_u16.to_le_bytes());
+        let end = vec![0, 0, 0x7b, 0, 0, 7, 0];
+        let walked = walked(&rar4(&[past, end]));
+        assert_eq!(walked.stopped, Some("a block header cannot be read"));
+    }
+
     /// A file of `len` zero bytes but for `blocks`, each at its offset: room
     /// for an entry above 4 GiB without writing one.
     struct Sparse {
@@ -1106,6 +1300,7 @@ mod walk {
                 size: (2 << 32) | 5,
                 crc: Some(0x1234_5678),
                 target: None,
+                blake2: None,
             }]
         );
     }
@@ -1389,6 +1584,7 @@ mod walk {
             size: 5,
             crc: Some(0x1234_5678),
             target: None,
+            blake2: None,
         }];
         // A RAR5 extra record of a size of 1, then type 1: encryption.
         let blocks = [
@@ -1445,11 +1641,13 @@ mod walk {
             size: 5,
             crc: Some(0x1234_5678),
             target: None,
+            blake2: None,
         }];
         let unchecked = [Header {
             size: 5,
             crc: None,
             target: None,
+            blake2: None,
         }];
         for host in 0..=2 {
             assert_eq!(headers(host, 0x20), checked, "host {host}: a file");
@@ -1542,14 +1740,16 @@ mod walk {
             size: 5,
             crc: Some(7),
             target: None,
+            blake2: None,
         };
         let unchecked = Header {
             size: 9,
             crc: None,
             target: None,
+            blake2: None,
         };
         let walk = Walk {
-            headers: vec![checked, unchecked],
+            headers: vec![checked.clone(), unchecked.clone()],
             ..Walk::default()
         };
         assert_eq!(walk.listed(0, Some(5)), Ok(&checked));
@@ -1566,10 +1766,33 @@ mod walk {
         assert_eq!(walk.finished(1), Err(differ), "a listing that ended early");
         assert_eq!(walk.finished(3), Err(differ), "a listing that ran on");
 
+        let hashed = Walk {
+            headers: vec![Header {
+                size: 5,
+                crc: None,
+                target: None,
+                blake2: Some(Box::new([7; 32])),
+            }],
+            ..Walk::default()
+        };
+        let hashed_header = &hashed.headers[0];
+        assert_eq!(hashed.listed(0, Some(5)), Ok(hashed_header), "BLAKE2 alone");
+        assert_eq!(
+            hashed.listed(0, Some(4)),
+            Err(differ),
+            "BLAKE2: another size"
+        );
+        assert_eq!(
+            hashed.listed(0, None),
+            Err(differ),
+            "BLAKE2: no regular file"
+        );
+
         let cut = Walk {
-            headers: vec![checked],
+            headers: vec![checked.clone()],
             stopped: Some("cut"),
             solid: false,
+            rar4: false,
         };
         assert_eq!(cut.listed(0, Some(5)), Ok(&checked), "read before the cut");
         assert_eq!(
@@ -1578,5 +1801,103 @@ mod walk {
             "the cause, past the cut"
         );
         assert_eq!(cut.finished(1), Err("cut"), "however far the listing got");
+    }
+}
+
+/// How libarchive's bytes for an entry's name are decoded: a RAR4's as code
+/// page 437 where they are not UTF-8, a RAR5's as UTF-8 alone (O351).
+#[cfg(feature = "rar-libarchive")]
+mod names {
+    use std::io::{Cursor, Write as _};
+
+    use super::super::libarchive::decoder;
+    use super::super::libarchive::headers::Walk;
+    use super::super::libarchive::names::{cp437, rar4, utf8};
+
+    /// `name` as `zip` reads it from an entry stored under it: UTF-8 where it
+    /// is, else code page 437, by a table of `zip`'s own.
+    fn zip_reads(name: &[u8]) -> String {
+        let placeholder = "x".repeat(name.len());
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file(placeholder.as_str(), options)
+            .expect("the entry starts");
+        zip.write_all(b"page").expect("the entry writes");
+        let mut bytes = zip.finish().expect("the zip finishes").into_inner();
+        // The name is stored twice, in the local header and the central
+        // directory, and an ASCII name sets no UTF-8 flag.
+        let at: Vec<usize> = bytes
+            .windows(name.len())
+            .enumerate()
+            .filter(|(_, window)| *window == placeholder.as_bytes())
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(at.len(), 2, "the name is stored twice");
+        for at in at {
+            bytes[at..at + name.len()].copy_from_slice(name);
+        }
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("the zip opens");
+        let entry = archive.by_index(0).expect("the entry reads");
+        entry.name().expect("the name decodes").into_owned()
+    }
+
+    #[test]
+    fn code_page_437_maps_every_byte_as_zip_does() {
+        let high: Vec<u8> = (0x80..=0xff).collect();
+        let decoded = cp437(&high);
+        assert_eq!(decoded, zip_reads(&high));
+        assert_eq!(decoded.chars().count(), 128, "a character for each byte");
+        assert!(
+            decoded.chars().all(|c| !c.is_ascii()),
+            "no high byte maps into ASCII: {decoded}"
+        );
+        for byte in 0..0x80 {
+            assert_eq!(cp437(&[byte]), char::from(byte).to_string(), "{byte:#04x}");
+        }
+    }
+
+    #[test]
+    fn a_rar4_name_is_utf8_where_it_can_be_and_code_page_437_where_not() {
+        assert_eq!(rar4(b"p01.png").ok().as_deref(), Some("p01.png"));
+        assert_eq!(
+            rar4("ページ.png".as_bytes()).ok().as_deref(),
+            Some("ページ.png")
+        );
+        // Bytes that are not UTF-8 read as zip reads them.
+        for name in [&b"\x80\xe9\xff.png"[..], b"caf\xe9.png", b"\xc3"] {
+            let got = rar4(name).unwrap_or_else(|e| panic!("{name:?}: {e}"));
+            assert_eq!(got, zip_reads(name), "{name:?}");
+        }
+        assert_eq!(
+            rar4(b"\x80\xe9\xff.png").ok().as_deref(),
+            Some("\u{c7}\u{398}\u{a0}.png")
+        );
+    }
+
+    #[test]
+    fn a_rar5_name_must_be_utf8() {
+        assert_eq!(
+            utf8("ページ.png".as_bytes()).ok().as_deref(),
+            Some("ページ.png")
+        );
+        assert!(utf8(b"\x80.png").is_err(), "not UTF-8");
+    }
+
+    /// The walk says which format the archive is, and so which rule its names
+    /// are decoded by.
+    #[test]
+    fn a_walk_of_a_rar4_alone_decodes_names_as_code_page_437() {
+        let rar4 = Walk {
+            rar4: true,
+            ..Walk::default()
+        };
+        let rar5 = Walk::default();
+        assert_eq!(
+            decoder(&rar4)(b"\x80.png").ok().as_deref(),
+            Some("\u{c7}.png")
+        );
+        assert!(decoder(&rar5)(b"\x80.png").is_err(), "a RAR5 name");
+        assert_eq!(decoder(&rar5)(b"p.png").ok().as_deref(), Some("p.png"));
     }
 }

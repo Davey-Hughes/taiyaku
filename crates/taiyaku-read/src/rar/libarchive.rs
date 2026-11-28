@@ -5,11 +5,12 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-use compress_tools::{ArchiveContents, ArchiveIterator, stat};
+use compress_tools::{ArchiveContents, ArchiveIterator, DecodeCallback, stat};
 
 use super::{Backend, Entry, Visitor};
 
 pub(super) mod headers;
+pub(super) mod names;
 
 use headers::{Header, Walk};
 
@@ -23,9 +24,17 @@ impl Backend for Libarchive {
 
     // The version pkg-config gave the build (`build.rs`, ruling P2-R5):
     // compress-tools exposes none at run time, and this workspace forbids the
-    // unsafe code that would ask libarchive itself.
+    // unsafe code that would ask libarchive itself. Then the rule a RAR4 name
+    // is decoded by (`names::RULE`): which names decode decides which archives
+    // count, so a build that decodes them by another rule counts every RAR
+    // again.
     fn signature(&self) -> String {
-        format!("{}-{}", self.name(), env!("TAIYAKU_LIBARCHIVE_VERSION"))
+        format!(
+            "{}-{}-{}",
+            self.name(),
+            env!("TAIYAKU_LIBARCHIVE_VERSION"),
+            names::RULE
+        )
     }
 
     fn entries(&self, path: &Path) -> Result<Vec<Entry>, String> {
@@ -36,7 +45,7 @@ impl Backend for Libarchive {
     // Not `uncompress_archive_file`, which hides the declared size a cut-short entry falls below.
     fn read(&self, path: &Path, name: &str) -> Result<Vec<u8>, String> {
         let (file, walk) = open(path)?;
-        let mut archive = iterate(&file, path)?;
+        let mut archive = iterate(&file, &walk, path)?;
         let mut position = 0;
         while let Some((found, stat)) = next_entry(&mut archive, path)? {
             let header = listed(&walk, position, &stat, path)?;
@@ -96,7 +105,7 @@ impl Backend for Libarchive {
         f: &mut Visitor<'_>,
     ) -> Result<(), String> {
         let (file, walk) = open(path)?;
-        let mut archive = iterate(&file, path)?;
+        let mut archive = iterate(&file, &walk, path)?;
         // A target's bytes are kept from its own position to its last
         // reference's, so that one pass hands every reference over: a target
         // always comes first.
@@ -167,7 +176,7 @@ fn open(path: &Path) -> Result<(File, Walk), String> {
 fn list(file: &File, path: &Path) -> Result<(Walk, Vec<Entry>), String> {
     let cut = lacks_end_block(&mut &*file).map_err(|e| unreadable(path, &e))?;
     let walk = headers::walk(&mut &*file).map_err(|e| unreadable(path, &e))?;
-    let mut archive = iterate(file, path)?;
+    let mut archive = iterate(file, &walk, path)?;
     let mut entries = Vec::new();
     while let Some((name, stat)) = next_entry(&mut archive, path)? {
         let header = listed(&walk, entries.len(), &stat, path)?;
@@ -201,7 +210,7 @@ fn read_at(
     path: &Path,
     name: &str,
 ) -> Result<Vec<u8>, String> {
-    let mut archive = iterate(file, path)?;
+    let mut archive = iterate(file, walk, path)?;
     let mut position = 0;
     while let Some((_, stat)) = next_entry(&mut archive, path)? {
         let header = listed(walk, position, &stat, path)?;
@@ -213,8 +222,8 @@ fn read_at(
     Err(unreadable(path, &walk.differs()))
 }
 
-/// The walk's header for the entry listed at `position`, whose CRC32, if any,
-/// that entry's bytes must meet.
+/// The walk's header for the entry listed at `position`, whose CRC32 or
+/// BLAKE2 hash, if any, that entry's bytes must meet.
 fn listed<'a>(
     walk: &'a Walk,
     position: usize,
@@ -245,8 +254,17 @@ fn rest_agrees(
     walk.finished(position).map_err(|e| unreadable(path, &e))
 }
 
-fn iterate<'f>(file: &'f File, path: &Path) -> Result<Archive<'f>, String> {
-    ArchiveIterator::from_read(file).map_err(|e| unreadable(path, &e))
+/// A pass of libarchive over `file`, whose names are decoded as the walk of it
+/// says they are stored.
+fn iterate<'f>(file: &'f File, walk: &Walk, path: &Path) -> Result<Archive<'f>, String> {
+    ArchiveIterator::from_read_with_encoding(file, decoder(walk)).map_err(|e| unreadable(path, &e))
+}
+
+/// How the names of the archive `walk` was taken of are decoded: a RAR4's by
+/// [`names::rar4`], since one may be in a legacy code page, and any other's,
+/// a RAR5's, as UTF-8 alone, as the format stores them.
+pub(super) fn decoder(walk: &Walk) -> DecodeCallback {
+    if walk.rar4 { names::rar4 } else { names::utf8 }
 }
 
 fn unreadable(path: &Path, cause: &dyn std::fmt::Display) -> String {
@@ -264,10 +282,10 @@ fn next_entry(archive: &mut Archive<'_>, path: &Path) -> Result<Option<(String, 
 }
 
 /// The bytes of the entry the archive is at, which `header` declares, refused
-/// unless they come to its size and meet its CRC32 where it gives one: an
-/// entry cut short by a truncated archive ends early with no error, and
-/// libarchive reads a stored entry's data unchecked. The walk's size, not
-/// libarchive's, since libarchive gives a redirected entry none.
+/// unless they come to its size and meet its CRC32 and its BLAKE2 hash where
+/// it gives them: an entry cut short by a truncated archive ends early with no
+/// error, and libarchive reads a stored entry's data unchecked. The walk's
+/// size, not libarchive's, since libarchive gives a redirected entry none.
 fn data(
     archive: &mut Archive<'_>,
     path: &Path,
@@ -292,6 +310,16 @@ fn data(
     if header.crc.is_some_and(|crc| crc != crc32fast::hash(&bytes)) {
         return Err(format!(
             "{}: {name}: its data does not match the CRC32 in its header",
+            path.display()
+        ));
+    }
+    if header
+        .blake2
+        .as_deref()
+        .is_some_and(|hash| blake2s_simd::blake2sp::blake2sp(&bytes) != hash[..])
+    {
+        return Err(format!(
+            "{}: {name}: its data does not match the BLAKE2 hash in its header",
             path.display()
         ));
     }

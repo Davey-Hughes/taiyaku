@@ -188,7 +188,8 @@ rar6 -s "$OUT/$FX" p01.png p02.png p03.png
 entry p01.png file; entry p02.png file; entry p03.png file
 refused
 
-# Stored with a BLAKE2 hash in place of the CRC32 taiyaku checks.
+# Stored with a BLAKE2sp hash in place of a CRC32, which taiyaku checks
+# instead (O383).
 begin rar5-blake2.rar rar5
 noise 31 64x64 p01.png; noise 32 64x64 p02.png
 rar7 -m0 -htb "$OUT/$FX" p01.png p02.png

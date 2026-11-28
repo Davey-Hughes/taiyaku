@@ -28,6 +28,12 @@ image = { version = "0.25.9", default-features = false, features = ["png"], opti
 # Optional and off by default: the RAR backend over the system's libarchive. A
 # build without it links no libarchive and refuses RAR.
 compress-tools = { version = "0.16", optional = true }
+# Optional, with the libarchive backend: a RAR5 entry made with `rar -htb`
+# declares a BLAKE2sp hash in place of a CRC32, and libarchive compares no
+# stored entry's data with either, so a read holds the bytes to that hash
+# (O383). The `blake2` already in the lock, argon2's, has no tree mode, and
+# BLAKE2sp is BLAKE2s over eight leaves and a root.
+blake2s_simd = { version = "1.0.5", optional = true }
 
 [build-dependencies]
 # Optional, with the libarchive backend: `build.rs` asks it for the libarchive
@@ -42,7 +48,7 @@ pkg-config = { version = "0.3.34", optional = true }
 [features]
 test-support = ["dep:image"]
 # `build.rs` sets the `rar` cfg when any RAR backend's feature is on.
-rar-libarchive = ["dep:compress-tools", "dep:pkg-config"]
+rar-libarchive = ["dep:compress-tools", "dep:pkg-config", "dep:blake2s_simd"]
 
 [lints]
 workspace = true

@@ -550,42 +550,113 @@ fn a_rar5_may_end_in_zero_padding_and_nothing_else() {
     });
 }
 
-/// Ruling R11: a RAR4 legacy-code-page name whose bytes are not UTF-8 reaches
-/// the backend as they are, and the archive is refused, never counted short.
-/// The control renames the same entry to ASCII under the same rewritten header
-/// CRC, so the refusal is the name's, not the header's.
+/// O351: a RAR4 name stored in a legacy code page, with no Unicode name beside
+/// it, whose bytes are not UTF-8, reads under its CP437 decoding, as a zip's
+/// does, by position, by name, in a visit and in an edition, and takes its
+/// place among the pages. The control renames the same entry to ASCII under
+/// the same rewritten header CRC, so what changes is the name's alone. A 0x5C
+/// after a byte of ASCII is RAR's separator, which libarchive gives as `/`.
 #[test]
-fn a_rar4_name_that_is_not_utf8_refuses_the_archive() {
+fn a_rar4_name_in_a_legacy_code_page_reads_under_its_cp437_name() {
     let fixture = fixture("rar4.rar");
     let original = std::fs::read(&fixture.path).expect("the fixture reads");
+    let sha = sha_of_page(&fixture, "p03.png");
     let dir = TempDir::new("rar4-name");
-    let renamed = |first: u8| {
+    // 0x80, 0xE9 and 0xFF: the first, a middle and the last byte CP437 maps
+    // outside ASCII, the last to a no-break space.
+    for (label, stored, decoded) in [
+        ("control", b"q03" as &[u8], "q03"),
+        ("legacy", b"\x80\xe9\xff", "\u{c7}\u{398}\u{a0}"),
+        ("separator", b"a\\\x80", "a/\u{c7}"),
+    ] {
         let mut bytes = original.clone();
-        let at = rar4_file_header(&bytes, "p03.png");
-        bytes[at + 32] = first;
-        let size = usize::from(u16::from_le_bytes([bytes[at + 5], bytes[at + 6]]));
-        let crc = crc32fast::hash(&bytes[at + 2..at + size]).to_le_bytes();
-        bytes[at..at + 2].copy_from_slice(&crc[..2]);
-        let path = dir.join(format!("{first:02x}.cbr"));
+        let to = [stored, b".png"].concat();
+        rename_rar4_entry_to_bytes(&mut bytes, "p03.png", &to);
+        let path = dir.join(format!("{label}.cbr"));
         std::fs::write(&path, bytes).expect("the copy writes");
-        path
-    };
-    let (control, legacy) = (renamed(b'q'), renamed(0xE9));
-    let mut want: Vec<String> = fixture
-        .pages
-        .iter()
-        .map(|(name, _)| name.replace("p03", "q03"))
-        .collect();
-    want.sort_by(|a, b| crate::naming::natural_cmp(a, b));
+        let name = format!("{decoded}.png");
+        let mut want: Vec<String> = fixture
+            .pages
+            .iter()
+            .map(|(page, _)| page.replace("p03", decoded))
+            .collect();
+        want.sort_by(|a, b| crate::naming::natural_cmp(a, b));
+        let at_page = want.iter().position(|page| *page == name);
+        let i = index(at_page.expect("the renamed entry is a page"));
+        each_backend(|backend| {
+            let at = |call: &str| format!("{backend} on {label}: {call}");
+            assert_eq!(
+                member_pages(&path),
+                Ok(index(want.len())),
+                "{}",
+                at("count")
+            );
+            let names = member_page_names(&path);
+            assert_eq!(names.as_ref(), Ok(&want), "{}", at("names"));
+            let page = member_page(&path, i).unwrap_or_else(|e| panic!("{}: {e}", at("page")));
+            assert_eq!(
+                (page.name.as_str(), sha256_hex(&page.bytes)),
+                (name.as_str(), sha.clone()),
+                "{}",
+                at("page")
+            );
+            let by_name = archive_page(&path, &name).map(|page| sha256_hex(&page.bytes));
+            assert_eq!(by_name.as_ref(), Ok(&sha), "{}", at("by name"));
+            let mut handed = Vec::new();
+            for_each_member_page(&path, &mut |entry, _| {
+                handed.push(entry.name.clone());
+                Ok(())
+            })
+            .unwrap_or_else(|e| panic!("{}: {e}", at("each page")));
+            assert_eq!(handed, want, "{}", at("each page"));
+            let edition = read_edition(std::slice::from_ref(&path));
+            let edition = edition.unwrap_or_else(|e| panic!("{}: {e}", at("edition")));
+            let edition: Vec<&str> = edition.iter().map(|page| page.name.as_str()).collect();
+            assert_eq!(edition, want, "{}", at("edition"));
+        });
+    }
+}
+
+/// O351: a legacy RAR4 name whose 0x5C follows a byte above 0x7F, as in
+/// Shift-JIS, where 8F 5C is one character, refuses the archive. libarchive
+/// gives that 0x5C as `/`, and read as a separator it would leave `p\x8f/.png`
+/// a hidden file in a folder, counted out of the pages without a word. So does
+/// one whose bytes happen to be UTF-8: C2 95 5C is "ﾂ表" in Shift-JIS.
+#[test]
+fn a_rar4_name_whose_backslash_may_be_half_a_character_refuses_the_archive() {
+    let fixture = fixture("rar4.rar");
+    let original = std::fs::read(&fixture.path).expect("the fixture reads");
+    let dir = TempDir::new("rar4-ambiguous");
+    for (label, name) in [("shift-jis", b"p\x8f\\.png"), ("utf-8", b"\xc2\x95\\.png")] {
+        let mut bytes = original.clone();
+        rename_rar4_entry_to_bytes(&mut bytes, "p03.png", name);
+        let path = dir.join(format!("{label}.cbr"));
+        std::fs::write(&path, bytes).expect("the copy writes");
+        each_backend(|backend| {
+            let text = "an entry's name, in a legacy code page, holds a byte that may be half of a character or a path separator";
+            reads_nothing_of(&path, text, &format!("{backend} on {label}"));
+        });
+    }
+}
+
+/// A RAR5 stores every name as UTF-8, so the CP437 fallback is RAR4's alone:
+/// a RAR5 name that is not UTF-8 still refuses the archive, never counted
+/// short or read under a guessed name. libarchive keeps no name for an entry
+/// whose name it cannot read as UTF-8, and compress-tools refuses an entry
+/// with none before a decoder sees it, so the refusal names no cause of
+/// taiyaku's; that a RAR5's names go to the strict decoder all the same is
+/// `rar::tests`' to hold.
+#[test]
+fn a_rar5_name_that_is_not_utf8_refuses_the_archive() {
+    let fixture = fixture("rar5-stored.rar");
+    let mut bytes = std::fs::read(&fixture.path).expect("the fixture reads");
+    rename_rar5_entry_to_bytes(&mut bytes, "p02.png", b"\x8202.png");
+    let dir = TempDir::new("rar5-name");
+    let path = dir.join("legacy.cbr");
+    std::fs::write(&path, bytes).expect("the copy writes");
     each_backend(|backend| {
-        let at = format!("{backend}: control");
-        assert_eq!(member_page_names(&control).as_ref(), Ok(&want), "{at}");
-        refusal(
-            member_pages(&legacy),
-            &legacy,
-            "not a readable RAR archive",
-            backend,
-        );
+        let text = "not a readable RAR archive";
+        reads_nothing_of(&path, text, backend);
     });
 }
 
@@ -662,13 +733,18 @@ fn rar5_block_named(bytes: &[u8], name: &str) -> (usize, usize, usize) {
 
 /// Renames entry `from` to `to`, of the same length, under a valid header CRC.
 fn rename_rar5_entry(bytes: &mut [u8], from: &str, to: &str) {
+    rename_rar5_entry_to_bytes(bytes, from, to.as_bytes());
+}
+
+/// [`rename_rar5_entry`] to a name given as bytes, which need not be UTF-8.
+fn rename_rar5_entry_to_bytes(bytes: &mut [u8], from: &str, to: &[u8]) {
     let (start, header_end, _) = rar5_block_named(bytes, from);
     let at = start
         + bytes[start..header_end]
             .windows(from.len())
             .position(|window| window == from.as_bytes())
             .expect("the block names it");
-    bytes[at..at + to.len()].copy_from_slice(to.as_bytes());
+    bytes[at..at + to.len()].copy_from_slice(to);
     let crc = crc32fast::hash(&bytes[start + 4..header_end]).to_le_bytes();
     bytes[start..start + 4].copy_from_slice(&crc);
 }
@@ -735,8 +811,14 @@ fn rar5_set_field(bytes: &mut [u8], name: &str, field: usize, value: &[u8]) {
 /// Renames RAR4 entry `from` to `to`, of the same length, under a valid
 /// header CRC.
 fn rename_rar4_entry(bytes: &mut [u8], from: &str, to: &str) {
+    rename_rar4_entry_to_bytes(bytes, from, to.as_bytes());
+}
+
+/// [`rename_rar4_entry`] to a name given as bytes, as a legacy code page
+/// stores it, with no Unicode name beside it.
+fn rename_rar4_entry_to_bytes(bytes: &mut [u8], from: &str, to: &[u8]) {
     let at = rar4_file_header(bytes, from);
-    bytes[at + 32..at + 32 + to.len()].copy_from_slice(to.as_bytes());
+    bytes[at + 32..at + 32 + to.len()].copy_from_slice(to);
     rar4_fix_header_crc(bytes, at);
 }
 
@@ -767,11 +849,27 @@ fn with_stored_byte_flipped(archive: &[u8], page: &[u8], skip: usize) -> Vec<u8>
 /// entry is matched whole, as a name contained in another, such as `p02.png`
 /// in `.p02.png`, would otherwise pass for it.
 fn crc_refusal<T: std::fmt::Debug>(got: Result<T, String>, path: &Path, name: &str, at: &str) {
+    checksum_refusal(got, path, name, "CRC32", at);
+}
+
+/// [`crc_refusal`] for an entry held to the BLAKE2 hash in its header.
+fn blake2_refusal<T: std::fmt::Debug>(got: Result<T, String>, path: &Path, name: &str, at: &str) {
+    checksum_refusal(got, path, name, "BLAKE2 hash", at);
+}
+
+/// The refusal `got` must be: its path, the entry, and that its data does not
+/// match the `checksum` in its header.
+fn checksum_refusal<T: std::fmt::Debug>(
+    got: Result<T, String>,
+    path: &Path,
+    name: &str,
+    checksum: &str,
+    at: &str,
+) {
     let error = got.expect_err(at);
+    let cause = format!(": {name}: its data does not match the {checksum} in its header");
     assert!(
-        error.contains(&path.display().to_string())
-            && error.contains(&format!(": {name}: "))
-            && error.contains("CRC32"),
+        error.contains(&path.display().to_string()) && error.contains(&cause),
         "{at}: {error}"
     );
 }
@@ -905,10 +1003,15 @@ fn sha_of_page(fixture: &RarFixture, name: &str) -> String {
         )
 }
 
-/// Ruling R22: an entry that declares a BLAKE2 hash and no CRC32 stays unchecked,
-/// so its damage reads through, as it does today.
+/// O383: an entry that declares a BLAKE2 hash and no CRC32
+/// is held to its hash as a CRC32 entry is held to its CRC32, so a stored page
+/// damaged on disk is refused by every function that hands back its bytes,
+/// the download's description of the pages among them, which reads such a
+/// page for the CRC32 a zip needs. The page before it still reads, and the
+/// undamaged fixture reading whole (`every_fixture_reads_as_its_manifest_says`)
+/// shows that the hash taiyaku computes is the one rar wrote.
 #[test]
-fn a_stored_blake2_entry_is_read_unchecked() {
+fn a_damaged_stored_blake2_page_is_refused_by_every_read() {
     let fixture = fixture("rar5-blake2.rar");
     let original = std::fs::read(&fixture.path).expect("the fixture reads");
     let page = member_page(&fixture.path, 1).expect("the fixture's page reads");
@@ -916,13 +1019,21 @@ fn a_stored_blake2_entry_is_read_unchecked() {
     let path = dir.join("damaged.rar");
     let damaged = with_stored_byte_flipped(&original, &page.bytes, 0);
     std::fs::write(&path, damaged).expect("the copy writes");
+    let name = page.name.as_str();
     each_backend(|backend| {
-        let got = member_page(&path, 1).unwrap_or_else(|e| panic!("{backend}: {e}"));
-        assert_eq!(got.bytes.len(), page.bytes.len(), "{backend}");
-        assert_ne!(
-            got.bytes, page.bytes,
-            "{backend}: the flip reached the page"
-        );
+        let at = |call: &str| format!("{backend}: {call}");
+        blake2_refusal(member_page(&path, 1), &path, name, &at("member_page"));
+        blake2_refusal(archive_page(&path, name), &path, name, &at("archive_page"));
+        let each = for_each_member_page(&path, &mut |_, _| Ok(()));
+        blake2_refusal(each, &path, name, &at("for_each_member_page"));
+        let edition = read_edition(std::slice::from_ref(&path));
+        blake2_refusal(edition, &path, name, &at("read_edition"));
+        let entry = member_entry(&path, name);
+        blake2_refusal(entry, &path, name, &at("member_entry"));
+        let members = crate::read_members_in_order(std::slice::from_ref(&path));
+        blake2_refusal(members, &path, name, &at("read_members_in_order"));
+        let entries = member_page_entries(&path);
+        blake2_refusal(entries, &path, name, &at("member_page_entries"));
         let first = member_page(&path, 0).unwrap_or_else(|e| panic!("{backend}: {e}"));
         assert_eq!(sha256_hex(&first.bytes), fixture.pages[0].1, "{backend}");
     });
@@ -1282,16 +1393,18 @@ fn a_header_declaring_more_than_the_file_holds_is_refused() {
 }
 
 /// A RAR5 extra area the walk and libarchive read differently. It opens with a
-/// hash record declaring 2 bytes: the walk steps by that size and finds one
-/// record of an unknown type filling the rest, while libarchive takes 33 bytes
-/// for a hash whatever the record declares, and so lands on a file-copy
-/// redirection to `target` inside what the walk passed over.
+/// time record declaring 2 bytes, its type and flags naming three times of 8
+/// bytes each: the walk steps by that size and finds one record of an unknown
+/// type filling the rest, while libarchive reads the three times whatever the
+/// record declares, and so lands on a file-copy redirection to `target` inside
+/// what the walk passed over. Not a hash record, which the walk reads too, and
+/// refuses where its hash runs past it.
 fn rar5_extra_read_two_ways(target: &str) -> Vec<u8> {
-    const HASH_RECORD_END: usize = 3 + 32;
+    const TIMES_END: usize = 3 + 3 * 8;
     let redirection = rar5_redirection(5, target);
-    let mut area = vec![2, 2, 0];
-    area.resize(HASH_RECORD_END, 0);
-    area[3] = u8::try_from(HASH_RECORD_END - 4 + redirection.len()).expect("a small record");
+    let mut area = vec![2, 3, 0x0e];
+    area.resize(TIMES_END, 0);
+    area[3] = u8::try_from(TIMES_END - 4 + redirection.len()).expect("a small record");
     area[4] = 0x7f;
     area.extend(redirection);
     area

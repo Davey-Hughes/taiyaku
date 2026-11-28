@@ -840,7 +840,8 @@ fn directory_page_entry(member: &Path, page: &Path) -> Result<(PageEntry, Vec<u8
 /// container — 7-Zip, tar, or RAR in a build without a RAR backend, named as
 /// such — if it parses as neither a zip archive nor a RAR archive the backend
 /// can list, if a listed zip entry cannot be looked up again by name, or if a
-/// RAR page whose header declares no CRC32 cannot be read.
+/// RAR page whose header declares no CRC32 cannot be read or does not match
+/// the BLAKE2 hash it declares in its place.
 pub fn member_page_entries(path: &Path) -> Result<Vec<PageEntry>, String> {
     if path.is_dir() {
         return directory_page_paths(path)?
@@ -1201,9 +1202,10 @@ fn rar_page(path: &Path, name: String) -> Result<Page, String> {
 }
 
 /// Described from the bytes the backend handed over, which it has held to the
-/// size and CRC32 their header declares, so a stream checked against
-/// [`member_page_entries`]' plan is checked on the bytes it sends. A page whose
-/// header declares a BLAKE2 hash and no CRC32 has only its bytes to give one.
+/// size and the CRC32 or BLAKE2 hash their header declares, so a stream
+/// checked against [`member_page_entries`]' plan is checked on the bytes it
+/// sends. A page whose header declares a BLAKE2 hash and no CRC32 has only
+/// its bytes to give one.
 #[cfg(rar)]
 fn rar_page_entry(name: &str, bytes: &[u8]) -> PageEntry {
     PageEntry {
@@ -1219,7 +1221,8 @@ fn rar_page_entry(name: &str, bytes: &[u8]) -> PageEntry {
 /// whose header declares a BLAKE2 hash and no CRC32 is read for its bytes, but
 /// the listing decodes a solid archive whole, as does the visit for such a
 /// page. A page damaged on disk is refused when the download reads it, as a
-/// zip's is, or by a solid archive's listing here.
+/// zip's is, or here: by a solid archive's listing, or by the read of a page
+/// held to its BLAKE2 hash.
 #[cfg(rar)]
 fn rar_page_entries(path: &Path) -> Result<Vec<PageEntry>, String> {
     let (pages, _) = rar_pages(path)?;

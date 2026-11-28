@@ -1,6 +1,7 @@
 //! What a RAR's own block headers declare of each entry, read from the same
 //! open file libarchive then reads. libarchive never compares a stored entry's
-//! data with its header's CRC32, so the check needs the checksum from here.
+//! data with its header's CRC32 or BLAKE2 hash, so the check needs the
+//! checksum from here.
 //! The walk also stops at what libarchive lists but cannot read whole, so that
 //! the archive is refused where it is listed.
 //!
@@ -54,6 +55,15 @@ const DANGLING: &str =
 /// written of other bytes, and its target's would read as a page of a size it
 /// does not declare.
 const RESIZED: &str = "an entry is a reference or hard link, and its size is not its target's";
+/// A RAR4 name with no Unicode form reaches taiyaku as the bytes of its
+/// writer's code page, with each 0x5C turned into `/` by libarchive, which
+/// reads it as RAR's `\`. After a byte above 0x7F that 0x5C may instead be
+/// the second byte of a character, as in Shift-JIS's 表 (95 5C), and reading it
+/// as a separator can move a page into a folder of no such name or, as in
+/// `表.png`, leave it a hidden file that is no page. A zip keeps such a name
+/// whole; the walk cannot tell which it is, so the archive is refused rather
+/// than counted short.
+const AMBIGUOUS_NAME: &str = "an entry's name, in a legacy code page, holds a byte that may be half of a character or a path separator";
 /// libarchive lists a junction, or a redirection of a type it does not know,
 /// by its attributes: as a regular file it gives no bytes for.
 const UNREAD_REDIRECTION: &str =
@@ -63,7 +73,7 @@ const UNREAD_REDIRECTION: &str =
 const MARKED_DIRECTORY: &str = "an entry's header marks it a directory and its attributes a file";
 
 /// What the headers declare of one entry, at its position in the archive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::rar) struct Header {
     /// The uncompressed size.
     pub(in crate::rar) size: u64,
@@ -71,6 +81,10 @@ pub(in crate::rar) struct Header {
     /// entry's is not of the whole file, and a reference, link or directory
     /// has no bytes of its own.
     pub(in crate::rar) crc: Option<u32>,
+    /// The BLAKE2sp hash of the entry's bytes that a RAR5 made with
+    /// `rar -htb` declares in place of the CRC32, by the CRC32's rule. Boxed,
+    /// as most entries have none and a walk holds up to `MAX_BLOCKS` headers.
+    pub(in crate::rar) blake2: Option<Box<[u8; 32]>>,
     /// For a hard link or file reference, the position of the earlier entry
     /// whose bytes it reads: the first regular file of the name its record
     /// gives, or that file's own target where it is one too, so that a target
@@ -88,12 +102,15 @@ pub(in crate::rar) struct Walk {
     pub(in crate::rar) stopped: Option<&'static str>,
     /// Listing past an entry of a solid archive decodes the entries it passes.
     pub(in crate::rar) solid: bool,
+    /// It starts with a RAR4 signature, so a name may be in a legacy code page.
+    pub(in crate::rar) rar4: bool,
 }
 
 impl Walk {
     /// The header of the entry at `position` of libarchive's listing, given
     /// the size libarchive lists it with if it is a regular file. An entry with
-    /// a checksum to meet must be that same file in the listing.
+    /// a checksum to meet, a CRC32 or a BLAKE2 hash, must be that same file in
+    /// the listing.
     pub(in crate::rar) fn listed(
         &self,
         position: usize,
@@ -102,7 +119,8 @@ impl Walk {
         let Some(header) = self.headers.get(position) else {
             return Err(self.differs());
         };
-        if header.crc.is_some() && listed_file != Some(header.size) {
+        let checked = header.crc.is_some() || header.blake2.is_some();
+        if checked && listed_file != Some(header.size) {
             return Err(LISTING_DIFFERS);
         }
         Ok(header)
@@ -152,6 +170,7 @@ pub(in crate::rar) fn walk_at_most<R: Read + Seek>(
         file.rewind()?;
         return Ok(walk);
     }
+    walk.rar4 = !rar5;
     let mut at = if rar5 { 8 } else { 7 };
     let mut blocks = 0;
     let mut earlier = Earlier::new();
@@ -425,6 +444,7 @@ fn rar5_file<'a>(fields: &mut Fields<'a>, block_flags: u64, extra: u64) -> Optio
         header: Header {
             size,
             crc: crc.filter(|_| checked),
+            blake2: records.blake2.filter(|_| checked).map(Box::new),
             target: None,
         },
         solid: compression & SOLID != 0,
@@ -440,15 +460,22 @@ fn rar5_file<'a>(fields: &mut Fields<'a>, block_flags: u64, extra: u64) -> Optio
 #[derive(Default)]
 struct Extra<'a> {
     encrypted: bool,
+    /// The BLAKE2sp hash a file hash record gives.
+    blake2: Option<[u8; 32]>,
     /// The redirection record's type and the name it gives: the entry's bytes
     /// are another entry's, or it is a link.
     redirect: Option<(u64, &'a [u8])>,
 }
 
-/// `None` where a record does not fit the area, or its fields do not fit it.
+/// `None` where a record does not fit the area, or its fields do not fit it,
+/// and where a file hash record gives a hash of a type other than BLAKE2sp,
+/// which libarchive refuses as it lists the entry, or holds more than its
+/// hash.
 fn rar5_extra(mut area: &[u8]) -> Option<Extra<'_>> {
     const ENCRYPTION: u64 = 1;
+    const HASH: u64 = 2;
     const REDIRECTION: u64 = 5;
+    const BLAKE2SP: u64 = 0;
 
     let mut extra = Extra::default();
     while !area.is_empty() {
@@ -458,6 +485,17 @@ fn rar5_extra(mut area: &[u8]) -> Option<Extra<'_>> {
         let mut fields = Fields(record);
         match fields.vint()? {
             ENCRYPTION => extra.encrypted = true,
+            HASH => {
+                if fields.vint()? != BLAKE2SP {
+                    return None;
+                }
+                extra.blake2 = Some(*fields.take(32)?.first_chunk()?);
+                // libarchive reads what follows the hash as further records,
+                // where the walk would step over it.
+                if !fields.0.is_empty() {
+                    return None;
+                }
+            }
             REDIRECTION => {
                 let kind = fields.vint()?;
                 let _flags = fields.vint()?;
@@ -472,7 +510,15 @@ fn rar5_extra(mut area: &[u8]) -> Option<Extra<'_>> {
 }
 
 fn rar4_block<R: Read + Seek>(file: &mut R, at: u64, walk: &mut Walk) -> std::io::Result<Step> {
-    let block = read_at(file, at, FIRST_READ)?;
+    let mut block = read_at(file, at, FIRST_READ)?;
+    // A header of more, a file's with a long name, is read whole: the walk
+    // reads the name.
+    if let Some(size) = u16_at(&block, 5)
+        .map(u64::from)
+        .filter(|&size| size > FIRST_READ)
+    {
+        block = read_at(file, at, size)?;
+    }
     Ok(rar4_fields(&block, at, walk).unwrap_or(Step::Stop(BAD_HEADER)))
 }
 
@@ -523,7 +569,8 @@ fn rar4_fields(block: &[u8], at: u64, walk: &mut Walk) -> Option<Step> {
                     return Some(Step::Stop(ENCRYPTED_ENTRY));
                 }
                 let unpacked = u64::from(u32_at(block, 11)?) | high(36)? << 32;
-                match rar4_file(block, flags, unpacked)? {
+                let header = block.get(..usize::try_from(size).ok()?)?;
+                match rar4_file(header, flags, unpacked)? {
                     Ok(header) => walk.headers.push(header),
                     Err(cause) => return Some(Step::Stop(cause)),
                 }
@@ -539,9 +586,12 @@ fn rar4_fields(block: &[u8], at: u64, walk: &mut Walk) -> Option<Step> {
 }
 
 /// A file block's header, whose unpacked size is `size`, or why the archive
-/// is refused at it.
+/// is refused at it. `None` where its name runs past `block`, the header
+/// whole, which libarchive refuses too.
 fn rar4_file(block: &[u8], flags: u16, size: u64) -> Option<Result<Header, &'static str>> {
     const SPLIT: u16 = 0x01 | 0x02;
+    const LARGE: u16 = 0x0100;
+    const UNICODE: u16 = 0x0200;
     const STORED: u8 = 0x30;
     const RAR29: u8 = 29;
     const RAR29_METHODS: std::ops::RangeInclusive<u8> = 0x31..=0x35;
@@ -562,13 +612,35 @@ fn rar4_file(block: &[u8], flags: u16, size: u64) -> Option<Result<Header, &'sta
     if regular && size > 0 && !decodes {
         return Some(Err(UNDECODED));
     }
+    let name_at = if flags & LARGE == 0 { 32 } else { 40 };
+    let name = block.get(name_at..name_at + usize::from(u16_at(block, 26)?))?;
+    // Under the Unicode flag the name is Unicode: one that follows the stored
+    // name after a zero byte, or, with none, the stored name read as UTF-8,
+    // in which a 0x5C is always the separator. Without it, the stored name is
+    // read as far as a zero byte.
+    let stored = name.split(|&byte| byte == 0).next().unwrap_or_default();
+    if flags & UNICODE == 0 && ambiguous(stored) {
+        return Some(Err(AMBIGUOUS_NAME));
+    }
     let checked = regular && flags & SPLIT == 0;
     let crc = u32_at(block, 16)?;
     Some(Ok(Header {
         size,
         crc: checked.then_some(crc),
+        blake2: None,
         target: None,
     }))
+}
+
+/// A RAR4 name with no Unicode form that holds a 0x5C right after a byte
+/// above 0x7F: [`AMBIGUOUS_NAME`]. Such a name may be valid UTF-8 and still be
+/// Shift-JIS, whose first bytes 0x81 to 0x9F are UTF-8's continuation bytes
+/// too, so its bytes do not settle it. A 0x5C after a byte of ASCII, or at the
+/// start, is no second byte of a character in any code page that has them,
+/// so it is the separator libarchive reads it as.
+fn ambiguous(name: &[u8]) -> bool {
+    name.windows(2)
+        .any(|pair| pair[0] > 0x7f && pair[1] == b'\\')
 }
 
 /// Unix mode bits that name a regular file.

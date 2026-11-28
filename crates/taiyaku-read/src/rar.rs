@@ -13,10 +13,14 @@ mod tests;
 /// One entry of an archive, as its header gives it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Entry {
-    /// UTF-8 and `/`-separated, as the archive names it. A name the backend
-    /// cannot decode as UTF-8, as a RAR4 name in a legacy code page may be,
-    /// refuses the whole archive as not a readable RAR archive, where a zip
-    /// keeps the page under a garbled name: the RAR4 row in `docs/status.md`.
+    /// `/`-separated, as the archive names it, and decoded as UTF-8. A RAR4
+    /// name with no Unicode form, stored in a legacy code page, is read as
+    /// code page 437 where its bytes are not UTF-8, as a zip's is, so the page
+    /// keeps its place under a name that may be garbled; one whose bytes
+    /// happen to be valid UTF-8 reads as UTF-8. A legacy name whose `\` may be
+    /// half of a character instead of a separator refuses the whole archive,
+    /// as does a name its header declares UTF-8 that is not, which libarchive
+    /// leaves with no name: a RAR5's, or a RAR4's under its Unicode flag.
     pub(crate) name: String,
     /// The uncompressed size the header declares. A hard link's or file
     /// reference's is its target's, whose bytes it reads.
@@ -26,8 +30,9 @@ pub(crate) struct Entry {
     pub(crate) readable: bool,
     /// The CRC32 the header declares for the bytes the entry reads, which a
     /// whole read of them meets: a hard link's or file reference's is its
-    /// target's. None where it declares none, as with a BLAKE2 hash in its
-    /// place, and for a directory or a symbolic link.
+    /// target's. None where it declares none, as a RAR5 made with `rar -htb`
+    /// declares a BLAKE2 hash in its place, which the backend holds a read to
+    /// instead, and for a directory or a symbolic link.
     pub(crate) crc: Option<u32>,
     /// For a hard link or file reference, the archive position of the earlier
     /// entry whose bytes it reads. An archive holding one with no such entry

@@ -1357,7 +1357,8 @@ fn the_reader_signature_names_every_page_extension_for_zip() {
 
 /// Ruling P2-R5: the RAR signature names the backend and the libarchive
 /// version pkg-config gave the build, so a build that gains RAR counts every
-/// RAR again.
+/// RAR again; and, since O351, the rule RAR4 names are read by, so that an
+/// archive a build before it refused for a legacy name is counted again.
 ///
 /// pkg-config is found as the `pkg-config` crate finds it for the build script
 /// of a native build where no target-specific or `HOST_` variable is set:
@@ -1383,7 +1384,7 @@ fn the_reader_signature_names_libarchives_build_time_version_for_rar() {
     assert_eq!(
         reader_signature("rar"),
         Some(format!(
-            "rar:libarchive-{version}:{}",
+            "rar:libarchive-{version}-rar4-cp437:{}",
             IMAGE_EXTENSIONS.join(",")
         ))
     );

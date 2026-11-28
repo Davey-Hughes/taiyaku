@@ -34338,3 +34338,196 @@ by the live checks above: no test runs the CLI with `--log-requests`. No
 device, no Panels session and no NAS saw the change, so what a write costs
 there is still not measured, though it no longer falls on a request's worker,
 and HTTP/2's paths were reasoned about, not run.
+
+## O351 and O383: RAR integrity (2026-11-27)
+
+The rows in `docs/status.md` say what the RAR integrity PR builds. It was
+written in a cloud session from a handoff, not on the owner's machine, and
+libarchive there was Ubuntu's 3.7.2, not the image's 3.7.4. Its evidence is
+under `.superpowers/sdd/2026-11-27-duet-five/`, which is not committed:
+`patches/README.md` lists the session's patch series,
+`patches/o351-o383-rar-integrity/` holds this one's patches and the README
+that says what ran where in that session, and `rar-integrity/` what ran on
+the owner's machine: the integration's report (`integrate.md`) and its logs,
+the gate's logs and the whole-branch review (`review-1.md`).
+
+**The rulings.** The owner ruled on 2026-11-27, on eight questions the
+handoff put: lift R22 and check BLAKE2 now; take the hash from the
+`blake2s_simd` crate; refuse a mismatch as "{path}: {name}: its data does not
+match the BLAKE2 hash in its header", the CRC32's sentence with the hash
+named; accept the RAR4 cut between two blocks as a limit of the format and
+close that half of O351; decode legacy names now, which lifts R11; read them
+as code page 437 where they are not UTF-8, keeping RAR5's names strict; and
+accept that the next scan counts every RAR again. Later on 2026-11-27 the
+owner accepted as a limit that a legacy RAR4 name whose 0x5C follows a byte
+above 0x7F refuses the archive at the count, which closes O351.
+
+**BLAKE2sp.** It is BLAKE2s at fanout 8 and depth 2: eight leaves take the
+data in 64-byte blocks in turn, and a root hashes their eight outputs. A
+RAR5 file header carries it in its extra area as a hash record, type 2, then
+the hash type, 0 for BLAKE2sp, then 32 bytes. libarchive refuses any other
+hash type as it lists, so the walk stops at one too, and at a record too
+short for its hash, as it does at a redirection record its name runs past.
+It stops at a record with bytes after its hash as well: libarchive reads a
+hash record field by field and takes what follows the hash for the next
+record, where the walk would step over the record by its size.
+`blake2s_simd` 1.0.5 has a `blake2sp` module and no unsafe code is needed to
+call it; the `blake2` 0.10 already in the lock, argon2's, has BLAKE2s but no
+tree mode. The crate compares its `Hash` with `constant_time_eq`, and adds
+that crate's 0.4.2 to the lock beside the 0.6.1 `zip` already takes, a
+second version rather than a second copy of one; the advisory database at
+`c9f6c91` (2026-11-26) has nothing against either. Neither `blake2s_simd`
+nor its 0.4.2 reaches a build without `rar-libarchive`. A hash in a header
+is no secret, so the constant-time comparison is incidental here.
+`Entry::crc` stays `None` for such an entry: the hash is checked inside the
+backend's read, and a download still computes the CRC32 a zip needs from
+the bytes, which that read has held to the hash.
+
+**Legacy names.** A RAR4 header with no Unicode name stores the name's bytes
+in the writer's code page, and libarchive hands them on as they are but for
+each 0x5C, RAR's separator `\`, which it turns into `/`.
+compress-tools' `from_read_with_encoding` takes the decoder, and the walk
+already knows the format from the signature, so a RAR4's names go to
+`names::rar4` and a RAR5's to `names::utf8`, which refuses what is not UTF-8
+as compress-tools' own decoder did. libarchive 3.7.2 keeps no name for a
+RAR5 entry whose name is not UTF-8, and compress-tools refuses an entry with
+none, as "archive entry has unreadable filename.", before any decoder sees
+it, so the end-to-end test asserts only that the archive is refused and
+`rar::tests::names` holds the RAR5 decoder to its rule. The
+table was written from Python's `cp437` codec and is checked against what
+`zip` 9.1.3 reads from a zip entry stored under all 128 high bytes; `zip`
+keeps its own table private. The reader signature gains `-rar4-cp437`
+after the libarchive version, so an archive the earlier rule refused counts
+at the next scan, at the cost of counting every RAR again.
+
+**A legacy name's 0x5C, and why O351 closes.** The first whole-branch review
+renamed `p03.png` in `rar4.rar` to the bytes `p 8F 5C .png` and found the
+archive counted four pages of five, with no error: libarchive gave the name as
+`p\x8F/.png`, a hidden file `.png` in a folder, which is no page. In a
+double-byte code page a 0x5C after a byte above 0x7F may be the second half of a
+character (Shift-JIS writes 表 as 95 5C, and ソ, 十, 能 and 予 the same way), and
+nothing in the header says which code page wrote the name. A 0x5C at the start
+of a name or after a byte of ASCII is a separator in every code page that has
+two-byte characters, since each one's first byte is above 0x7F. So the walk
+reads each RAR4 file's name from its header, reading the whole header where it
+runs past the first 512 bytes, and refuses the archive at the count where the
+name has no Unicode form and holds a 0x5C after a byte above 0x7F (`headers`'
+`ambiguous`). The name ends at its first zero byte, as libarchive reads it. The
+first fix let a name through whose bytes were valid UTF-8; the second review
+found that Shift-JIS's first bytes 0x81 to 0x9F are UTF-8's continuation bytes
+too, so `C2 95 5C .png` (Shift-JIS "ﾂ表.png") still counted four pages of five,
+as it did on `main`, and the check now holds whether or not the bytes are UTF-8.
+The cost is a name with no Unicode form that really is UTF-8, with a character
+outside ASCII just before a `\`, which `main` read and this refuses; `rar` 6
+wrote a Unicode form for `rar4.rar`'s `ページ05.png`, the one name outside ASCII
+among the RAR4 fixtures. Under the Unicode flag the name is Unicode, after a
+zero byte or as the stored bytes read as UTF-8, where a 0x5C is always the
+separator; libarchive leaves a name it declares UTF-8 that is not with no name,
+which compress-tools refuses, so the walk does not look. This is the half of
+O351's names that this PR does not build: reading such a name from the
+header's own bytes, which the walk now has, would need a ruling on what such
+a 0x5C is. The owner accepted the refusal as a limit on 2026-11-27, which
+closes O351.
+
+**The cut between two blocks.** A RAR4 need not end with an end block and
+names no writer, so a RAR4 cut exactly between two blocks is a well-formed
+shorter archive. A rule refusing a RAR4 with no end block would refuse
+good archives as well; one of the owner's ten RAR4 comics has none.
+`a_rar4_cut_short_of_its_last_block_reads_no_page` is unchanged and pins
+the behaviour.
+
+**Tests, each seen failing on `main` or against the mutation below.**
+`a_damaged_stored_blake2_page_is_refused_by_every_read` replaces
+`a_stored_blake2_entry_is_read_unchecked`, and
+`a_rar4_name_in_a_legacy_code_page_reads_under_its_cp437_name` replaces the R11
+test that pinned the refusal; both failed on `main`, as did the signature test
+with `-rar4-cp437` in its expected string.
+`a_rar5_name_that_is_not_utf8_refuses_the_archive` passed on `main` and pins the
+RAR5 half.
+`a_rar4_name_whose_backslash_may_be_half_a_character_refuses_the_archive` holds
+the two reviews' cases, each of which counted four pages of five before the walk
+refused it; the legacy-name test gains a name whose 0x5C follows a byte of
+ASCII, which reads as a folder. In `rar/tests.rs`,
+`a_rar5_hash_record_gives_its_blake2_hash_by_the_crc32s_rule` is new, the
+fixture walk now holds each page of `rar5-blake2.rar` to its hash and each
+fixture's walk to its format, the extra-area test's broken records gain five
+hash records, the listing test an entry with only a BLAKE2 hash, and the `names`
+module four tests.
+`a_rar4_name_whose_backslash_may_be_half_a_character_stops_the_walk` is new:
+with no Unicode flag, a 0x5C after each of 0x80, 0x95 and 0xFF stops the walk,
+as does one after bytes that are valid UTF-8, in a split entry, in a large
+header, before a zero byte that more bytes follow, and in a name past the first
+512 bytes; one after 0x7F, after a byte of ASCII, at the start, past the zero
+byte that ends the name, or under the Unicode flag, whether a Unicode name
+follows or not, does not, nor a long name that is all ASCII; and a name that
+runs past its header stops the walk as a header that cannot be read.
+`rar5_extra_read_two_ways` used a hash record of its type alone to make
+libarchive and the walk read an extra area two ways; the walk now stops at that
+record, so it uses a time record, which libarchive reads field by field and the
+walk steps over by its size.
+
+**Put wrong by hand**, each restored after, all twenty-three caught:
+
+- the BLAKE2 comparison skipped: the damaged-page test;
+- the hash record not parsed: that test, the hash record test, the
+  extra-area test and the fixture walk;
+- any hash type accepted: the extra-area test;
+- bytes after the hash let through: the extra-area test;
+- the hash kept for a link, a reference and a split part: the hash record
+  test;
+- the listing guard blind to a BLAKE2 hash: the listing test;
+- libarchive's own decoder put back (`from_read`): the legacy-name test and
+  the end-to-end 0x5C test;
+- a RAR5's names decoded as a RAR4's: the decoder test in `names`;
+- the walk never marking a RAR4: the legacy-name test, the end-to-end 0x5C
+  test and the fixture walk;
+- the signature's rule dropped: the signature test;
+- a RAR4 name always read as code page 437: ten tests, since `rar4.rar`
+  names a page `ページ05.png`, `every_fixture_reads_as_its_manifest_says`
+  and the `names` test of a UTF-8 name among them;
+- two entries of the table swapped, and the lower half moved by one: the
+  legacy-name test and three `names` tests;
+- the 0x5C check never refusing: both 0x5C tests;
+- a name of valid UTF-8 let through, as the first fix did: both 0x5C tests;
+- the bound moved to 0x7F or past 0x80, the check made under the Unicode
+  flag too, or only where the name holds no zero byte, the name read past
+  its zero byte, read at 32 in a large header, not read again past 512
+  bytes, or let run past its header: the walk's 0x5C test, each.
+
+**Reviews.** Two whole-branch reviews ran on the change, each from a fresh
+reader. The first found the page lost to a legacy name's 0x5C and a hash
+record with bytes after its hash, which the walk let through and libarchive
+reads as the start of another record; both are fixed above. The second found
+that the first fix let a Shift-JIS name through where its bytes happened to be
+UTF-8, which is fixed above too, and the equivalent mutant now in the baseline
+at `headers.rs:518:30`, a header of exactly 512 bytes read again.
+
+**cargo-mutants** 27.1.0, run by hand with `--in-diff` over this change's lines
+in `taiyaku-read`, every feature on, and not the sweep `scripts/mutants.sh`
+makes: 65 mutants, 55 caught, 8 unviable and 2 missed, the equivalent mutants
+the baseline lists at `headers.rs:518:30` and `:571:62`.
+
+**On the owner's machine** the patches were applied to `main` and rebased,
+and runs were added to the cloud session's. With the production code put back to
+`main`'s, the unit tests did not compile, and with `rar/tests.rs` put back too,
+four end-to-end tests failed, each for the reason it names (the `defect-A`,
+`defect-B` and `defect-B2` logs); five mutations put in by hand each failed a
+test (`M1` to `M5`). The sweep `scripts/mutants.sh` makes, `--since origin/main`
+under the sweep lock, found the same 65 mutants: 55 caught, 8 unviable and 2
+missed, the two the baseline lists, with no survivor outside it
+(`mutants-1.log`). libarchive there is 3.8.11, and all 268 `taiyaku-read` tests
+pass on it with every feature on (`head-read-tests.log`); the image's 3.7.4 was
+not run. The gate, `scripts/check-all.sh`, ran "all green, except NOT MEASURED"
+for the standing corpus checks alone, which need `TAIYAKU_CORPUS` (`gate-1.log`,
+and `gate-2.log` after the rebase onto #313). A third whole-branch review ran
+there and found nothing above Minor (`review-1.md`); its five Minor findings
+are fixed.
+
+**Not tested.** An empty file with a BLAKE2 hash: `data` compares the hash of
+no bytes with the header's, but no fixture holds one and no `rar` was at hand
+to write one, so whether `rar -htb` writes that hash for an empty file was not
+checked in the cloud session. A probe in the whole-branch review on the
+owner's machine settled it, though no fixture holds one: `rar` 7.23 with
+`-ma5 -htb` wrote stored, compressed and solid archives holding an empty file,
+and each listed and read by every path (`review-1.md`). Nor is the cost of
+hashing a page on each read measured.
