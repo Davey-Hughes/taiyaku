@@ -37,28 +37,27 @@ fn queued(count: usize) -> Vec<String> {
     (0..count).map(|n| format!("/{n}")).collect()
 }
 
-/// The paths of the lines in the file at `path`, read as it is, with no flush.
+/// The paths of the lines in the file at `path`, read as it is, with no
+/// flush, once the writer has finished: see
+/// [`crate::test_support::lines_on_disk`].
 fn paths(path: &std::path::Path) -> Vec<String> {
-    std::fs::read_to_string(path)
-        .unwrap()
-        .lines()
-        .map(|line| {
-            let value: serde_json::Value = serde_json::from_str(line).unwrap();
-            value["path"].as_str().unwrap().to_string()
-        })
-        .collect()
+    paths_of(&crate::test_support::lines_on_disk(path))
 }
 
-/// [`paths`], once the file holds `count` lines or [`LONG`] has passed.
+/// [`paths`], once the file holds `count` lines and ends at a line's end, or
+/// [`LONG`] has passed, for a file the writer may still be writing: see
+/// [`crate::test_support::lines_on_disk_within`].
 fn on_disk_within(path: &std::path::Path, count: usize) -> Vec<String> {
-    let deadline = Instant::now() + LONG;
-    loop {
-        let written = paths(path);
-        if written.len() >= count || Instant::now() >= deadline {
-            return written;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    paths_of(&crate::test_support::lines_on_disk_within(
+        path, count, LONG,
+    ))
+}
+
+fn paths_of(lines: &[serde_json::Value]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| line["path"].as_str().unwrap().to_string())
+        .collect()
 }
 
 /// A body read to its end, `bytes` long, for a test of the line rather than
@@ -209,13 +208,9 @@ fn entries_written_to_disk_are_valid_json_lines_with_the_expected_keys() {
     );
     log.flush();
 
-    let contents = std::fs::read_to_string(&path).unwrap();
-
-    let lines: Vec<&str> = contents.lines().collect();
+    let lines = crate::test_support::lines_on_disk(&path);
     assert_eq!(lines.len(), 2, "one line per finished request");
-    for line in lines {
-        let value: serde_json::Value = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("line must parse as JSON: {e}: {line}"));
+    for line in &lines {
         for key in [
             "method",
             "path",
@@ -228,7 +223,7 @@ fn entries_written_to_disk_are_valid_json_lines_with_the_expected_keys() {
             "in_flight",
             "headers",
         ] {
-            assert!(value.get(key).is_some(), "missing key `{key}` in {line}");
+            assert!(line.get(key).is_some(), "missing key `{key}` in {line}");
         }
     }
 }

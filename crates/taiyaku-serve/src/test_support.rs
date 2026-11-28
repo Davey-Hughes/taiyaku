@@ -1018,14 +1018,141 @@ pub(crate) fn log(dir: &std::path::Path) -> (std::sync::Arc<crate::Log>, std::pa
 /// struct definition that wrote it.
 pub(crate) fn logged_lines(log: &crate::Log, path: &std::path::Path) -> Vec<serde_json::Value> {
     log.flush();
-    std::fs::read_to_string(path)
-        .unwrap_or_default()
-        .lines()
+    lines_on_disk(path)
+}
+
+/// The lines of the request log at `path`, parsed, read as the file is, with
+/// no flush, for a read once its writer has finished. A file that ends inside
+/// a line, or holds a line that is not JSON, fails here: the log is a line to
+/// a request, and `scripts/request-summary.sh` counts its requests with
+/// `wc -l`, which misses a last line with no newline.
+pub(crate) fn lines_on_disk(path: &std::path::Path) -> Vec<serde_json::Value> {
+    whole_lines(path, &read_log(path))
+}
+
+/// [`lines_on_disk`], once the file holds at least `count` lines and ends at
+/// a line's end, or as it is once `within` has passed, for a file the log's
+/// writer may still be writing. The writer hands the file whole lines, but
+/// Linux does not make a write atomic to a read beside it, so a read can end
+/// part way through one, inside a line. Such a read is taken again rather
+/// than parsed; one still ending inside a line once `within` has passed fails.
+pub(crate) fn lines_on_disk_within(
+    path: &std::path::Path,
+    count: usize,
+    within: std::time::Duration,
+) -> Vec<serde_json::Value> {
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        let bytes = read_log(path);
+        let whole = bytes.is_empty() || bytes.ends_with(b"\n");
+        let lines = bytes.iter().filter(|&&byte| byte == b'\n').count();
+        if (whole && lines >= count) || std::time::Instant::now() >= deadline {
+            return whole_lines(path, &bytes);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+fn read_log(path: &std::path::Path) -> Vec<u8> {
+    std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// `bytes`, read from `path`, as lines of JSON, each ended by its newline.
+fn whole_lines(path: &std::path::Path, bytes: &[u8]) -> Vec<serde_json::Value> {
+    if !(bytes.is_empty() || bytes.ends_with(b"\n")) {
+        let last = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |i| i + 1);
+        panic!(
+            "{} ends inside a line: {}",
+            path.display(),
+            String::from_utf8_lossy(&bytes[last..])
+        );
+    }
+    let text = std::str::from_utf8(bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    text.lines()
         .map(|line| {
             serde_json::from_str(line)
                 .unwrap_or_else(|e| panic!("log line must parse as JSON: {e}: {line}"))
         })
         .collect()
+}
+
+/// The read helpers' own cases. A read beside the writer meets a log that
+/// ends inside a line only now and then, so the tests that read the log pass
+/// whether or not a helper waits out such a read, or fails a finished log
+/// left that way; these meet one every time (O627).
+mod reading_the_log {
+    use std::io::Write as _;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    /// One whole line and the start of a second, as a read beside the writer
+    /// can find the log.
+    fn torn(dir: &super::Fixture) -> PathBuf {
+        let path = dir.join("requests.jsonl");
+        std::fs::write(&path, "{\"path\":\"/0\"}\n{\"pa").unwrap();
+        path
+    }
+
+    /// The message `read` panicked with.
+    fn panicked(read: impl FnOnce() -> Vec<serde_json::Value> + std::panic::UnwindSafe) -> String {
+        let payload =
+            std::panic::catch_unwind(read).expect_err("a log ending inside a line was read");
+        payload
+            .downcast::<String>()
+            .map_or_else(|_| String::new(), |text| *text)
+    }
+
+    #[test]
+    fn a_poll_for_fewer_lines_than_are_coming_waits_for_the_last_ones_end() {
+        let dir = super::Fixture::new("log-poll-line-end");
+        let path = torn(&dir);
+        let finish = std::thread::spawn({
+            let path = path.clone();
+            move || {
+                // Late enough that the poll's first read finds the line unfinished.
+                std::thread::sleep(Duration::from_millis(100));
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .unwrap();
+                file.write_all(b"th\":\"/1\"}\n").unwrap();
+            }
+        });
+        let lines = super::lines_on_disk_within(&path, 1, Duration::from_secs(10));
+        finish.join().unwrap();
+        let paths: Vec<_> = lines.iter().map(|line| line["path"].as_str()).collect();
+        assert_eq!(paths, [Some("/0"), Some("/1")]);
+    }
+
+    #[test]
+    fn a_poll_over_a_line_never_finished_fails_at_its_deadline_and_not_before() {
+        let dir = super::Fixture::new("log-poll-deadline");
+        let path = torn(&dir);
+        let within = Duration::from_millis(200);
+        let start = Instant::now();
+        let text = panicked(|| super::lines_on_disk_within(&path, 1, within));
+        let took = start.elapsed();
+        assert!(text.contains("ends inside a line: {\"pa"), "{text}");
+        assert!(
+            took >= within,
+            "gave up after {took:?}, before its {within:?}"
+        );
+    }
+
+    #[test]
+    fn a_finished_log_whose_last_line_has_no_newline_fails() {
+        let dir = super::Fixture::new("log-no-last-newline");
+        let path = dir.join("requests.jsonl");
+        std::fs::write(&path, "{\"path\":\"/0\"}\n{\"path\":\"/1\"}").unwrap();
+        let text = panicked(|| super::lines_on_disk(&path));
+        assert!(
+            text.contains("ends inside a line: {\"path\":\"/1\"}"),
+            "{text}"
+        );
+    }
 }
 
 /// This thread's id as the kernel numbers it, which is what `strace -f`

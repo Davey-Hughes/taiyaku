@@ -34531,3 +34531,63 @@ owner's machine settled it, though no fixture holds one: `rar` 7.23 with
 `-ma5 -htb` wrote stored, compressed and solid archives holding an empty file,
 and each listed and read by every path (`review-1.md`). Nor is the cost of
 hashing a page on each read measured.
+
+## O627: the request log's tests, and a read beside its writer (2026-11-27)
+
+`reqlog::tests`' `a_line_finished_while_the_queue_is_full_is_dropped_and_counted`
+failed on CI run 1190, on a PR that does not touch `taiyaku-serve`: `paths`,
+under `on_disk_within`'s poll, panicked with `EOF while parsing a string` at
+column 87 of a line, after the writer had said on stderr that it lost 9
+lines. The readings of the writer and of a read beside it, and the run of
+`main`'s `on_disk_within` over a line finished late, came from a throwaway
+test module, kept with the logs under
+`.superpowers/sdd/2026-11-27-duet-five/reqlog-flake/`, which is not committed.
+
+- **The writer hands the file whole lines.** std's `BufWriter` (1.100,
+  `write_all_cold`) flushes its buffer before a line that does not fit in
+  it, and writes a line at least as long as its buffer straight to the
+  file, so each write it makes ends at a line's end. A recording writer
+  under a `BufWriter`, given 20,000 lines of 13 to 312 bytes and some of
+  9,013, took 429 writes, and none ended inside a line.
+- **A read beside a write can take part of it.** A thread read the file
+  over and over while the test queued 20 batches of 4,000 lines through a
+  real `Log`, flushing after each. In five runs, 5 to 19 of 3,617 to 5,385
+  reads a run ended inside a line; each such read ended at a multiple of
+  4,096 bytes, and the first in each run failed to parse as `paths` would
+  parse it. The files were under this machine's `/tmp`, a tmpfs. Linux
+  does not make a write to a file atomic to a read beside it, which takes
+  the part of the write copied in so far.
+- **How often it failed.** The test binary run alone with `--exact`, many
+  at once through `xargs`: 400 runs 16 at a time failed none; 6,000 runs
+  48 at a time on 32 cores failed 8 times, at loads read from 20.2 to
+  24.2; the four whose output was kept each panicked in `paths` on a line
+  cut short (`EOF while parsing` a string or an object). With the fix,
+  6,000 runs 48 at a time failed none, at loads read from 16.7 to 29.5.
+- **The fix**, in tests alone. `test_support::lines_on_disk_within` reads
+  the file again until it ends at a line's end and holds at least the
+  lines asked for, or its time has passed, and parses it only then.
+  `lines_on_disk`, for a read once the writer has finished, fails on a file
+  that ends inside a line; `reqlog::tests`' `paths`, `on_disk_within` and
+  `entries_written_to_disk_are_valid_json_lines_with_the_expected_keys`,
+  and `test_support::logged_lines`, read through the two.
+  `tests`' `serve_returns_once_every_line_finished_before_its_stop_is_written`
+  counted a line still being written as written, and waits through the
+  same helper.
+- **Watched.** A file holding one whole line and the start of a second,
+  whose end a thread appended 100 ms later, panicked `main`'s
+  `on_disk_within` with `EOF while parsing a string`, and passes the new
+  one. `test_support::reading_the_log` holds the helpers' own cases, each
+  over a file the test writes: a poll for one line over that file returns
+  both once the second ends; a poll over a line never finished fails with
+  "ends inside a line" at its deadline and not before; and a finished file
+  with no last newline fails `lines_on_disk`. With the wait for a line's
+  end taken out, the first two fail, and with the check for a file that
+  ends inside a line taken out, the last two; each time the rest of
+  `taiyaku-serve`'s tests pass. With `Out::write` made by hand to drop
+  each line's newline, 9 of `taiyaku-serve`'s tests failed with `main`'s
+  helpers and 28 with the new ones; with the new helpers' check for a file
+  that ends inside a line taken out as well, the same 9 and two of
+  `reading_the_log`'s. With it made to write each line's newline before
+  the next line, so the file ends without one,
+  `entries_written_to_disk_are_valid_json_lines_with_the_expected_keys`
+  fails, and passed as `main` has it.

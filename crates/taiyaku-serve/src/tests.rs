@@ -564,14 +564,8 @@ async fn serve_returns_once_every_line_finished_before_its_stop_is_written() {
         "serve returned while a line finished before its stop was still queued"
     );
     serving.await.unwrap().unwrap();
-    let deadline = std::time::Instant::now() + SERVE_ANSWERS_WITHIN;
-    while std::fs::read_to_string(&path).unwrap().lines().count() < 2 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "both lines are written"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    let lines = crate::test_support::lines_on_disk_within(&path, 2, SERVE_ANSWERS_WITHIN);
+    assert!(lines.len() >= 2, "both lines are written: {lines:?}");
 }
 
 /// O123: a stop whose log cannot write returns within its share of the stop's
