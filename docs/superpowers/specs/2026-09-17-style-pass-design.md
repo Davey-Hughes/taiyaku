@@ -804,7 +804,13 @@ cost of floating the list above the strip — the band where O65 docked
   least 44 px square under `(pointer: coarse)`, as ② made the sidebar's
   rows. *Since 2026-11-21 (O422) the button names where it goes and goes
   back there: `‹ Library`, `‹ Series`, `‹ Search` and so on, or
-  `‹ Back` where the place is not known.*
+  `‹ Back` where the place is not known.* *Since 2026-11-27 (O600), by
+  the owner's ask, the layout buttons are named in words rather than by
+  the layout's id (`single`, `two`, `scroll`, `compare`): One page, Two
+  pages, Scroll through the pages and, on a work of more than one
+  edition, Compare editions. The words are each button's visually hidden
+  text and its hover text, so the buttons are still drawn as icons and
+  the title keeps its room.*
 - **The title block**: the work's title in the title face and, under it in
   `--muted`, `Vol. N · <label>` for the edition on screen — the one Space
   moves to. Both come from `/api/library/works/{slug}`, fetched once beside

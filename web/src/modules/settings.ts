@@ -3,6 +3,9 @@ import type { ReaderModule } from '../module'
 /** `settingsModule`'s own declared intent string — read here by `App.tsx` rather than duplicated as a literal. */
 export const TOGGLE_INTENT = 'settings:toggle'
 
+/** The panel's key, which ⚙'s hover text names: one declaration, so the two cannot disagree. */
+export const TOGGLE_KEY = 's'
+
 /**
  * The settings panel's own on/off key, registered exactly the way every
  * reading behaviour claims a key — through `ReaderModule.keys`, dispatched
@@ -25,5 +28,11 @@ export const settingsModule: ReaderModule<Record<string, never>> = {
   id: 'settings',
   label: 'Settings',
   defaults: {},
-  keys: [{ key: 's', intent: TOGGLE_INTENT, label: 'open the settings panel' }],
+  keys: [
+    {
+      key: TOGGLE_KEY,
+      intent: TOGGLE_INTENT,
+      label: 'open the settings panel',
+    },
+  ],
 }

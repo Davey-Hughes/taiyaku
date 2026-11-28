@@ -1448,9 +1448,9 @@ describe('leaving the reader', () => {
 
   it('shows the layout control only with the chrome, not above the page', async () => {
     const host = await open()
-    expect(button(host, 'two')).toBeUndefined()
+    expect(button(host, 'Two pages')).toBeUndefined()
     press('Tab')
-    expect(button(host, 'two')).toBeDefined()
+    expect(button(host, 'Two pages')).toBeDefined()
   })
 
   it('names the work and the edition on screen in the top bar, and follows the edition', async () => {
@@ -2147,14 +2147,14 @@ describe('the preference keys', () => {
     const host = await open()
     // In the top bar, which `Tab` brings in with the strip.
     press('Tab')
-    const two = button(host, 'two')
+    const two = button(host, 'Two pages')
     click(two)
     await settle()
     expect(pages(host)).toHaveLength(2)
     expect(prefsFor('layout').mode).toBe('two')
     expect(two.getAttribute('aria-pressed')).toBe('true')
-    expect(button(host, 'single').getAttribute('aria-pressed')).toBe('false')
-    const scroll = button(host, 'scroll')
+    expect(button(host, 'One page').getAttribute('aria-pressed')).toBe('false')
+    const scroll = button(host, 'Scroll through the pages')
     click(scroll)
     await settle()
     // Scroll mounts every group at once — six slots, six pages.
@@ -3144,7 +3144,7 @@ describe('the pointer on the page', () => {
   it('in scroll mode a tap anywhere only toggles the chrome', async () => {
     const host = await open()
     press('Tab')
-    click(button(host, 'scroll'))
+    click(button(host, 'Scroll through the pages'))
     const area = pageArea(host)
     measure(area, { w: 900, h: 600 })
     expect(progress(host)).toBe('50%')
@@ -3535,15 +3535,19 @@ describe('the pointer on the page', () => {
   // O430, for CI, which runs no browser: `App.browser.test.tsx` has the
   // gesture and the computed value. The reader's root holds the panels, whose
   // text stays selectable, so the rule is on the page area alone.
-  it.each(['single', 'two', 'scroll'] as const)(
+  it.each([
+    ['single', 'One page'],
+    ['two', 'Two pages'],
+    ['scroll', 'Scroll through the pages'],
+  ] as const)(
     'gives the page area user-select none, prefixed too, and the reader’s root neither, in %s mode',
-    async (mode) => {
+    async (mode, words) => {
       localStorage.setItem('taiyaku.prefs.layout', JSON.stringify({ mode }))
       const host = await open()
       press('Tab')
       const root = host.querySelector('.reader') as HTMLElement
       expect({
-        pressed: button(host, mode)?.getAttribute('aria-pressed'),
+        pressed: button(host, words)?.getAttribute('aria-pressed'),
         page: [
           pageArea(host).style.getPropertyValue('user-select'),
           pageArea(host).style.getPropertyValue('-webkit-user-select'),
@@ -4309,7 +4313,7 @@ describe('two editions compared', () => {
   it('offers compare in the top bar of a work of two editions', async () => {
     const host = await open()
     press('Tab')
-    click(button(host, 'compare'))
+    click(button(host, 'Compare editions'))
     await settle()
     expect(prefsFor('layout')).toEqual({ mode: 'compare' })
     expect(panes(host)).toHaveLength(2)
@@ -4331,8 +4335,8 @@ describe('two editions compared', () => {
     const host = await open()
     const compared = width(host)
     press('Tab')
-    expect(button(host, 'compare')).toBeUndefined()
-    expect(button(host, 'single').getAttribute('aria-pressed')).toBe('true')
+    expect(button(host, 'Compare editions')).toBeUndefined()
+    expect(button(host, 'One page').getAttribute('aria-pressed')).toBe('true')
     expect(host.querySelector('.compared')).toBeNull()
     expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/2')])
     localStorage.setItem(
@@ -4366,10 +4370,10 @@ describe('the keyboard ring', () => {
     // Stored progress is `raw` slot 2, so the strip's stop is "page 3".
     expect(walk).toEqual([
       'Library +bars',
-      'single +bars',
-      'two +bars',
-      'scroll +bars',
-      'compare +bars',
+      'One page +bars',
+      'Two pages +bars',
+      'Scroll through the pages +bars',
+      'Compare editions +bars',
       'Settings +bars',
       'page 3 +bars',
       'Help +bars',
@@ -4388,10 +4392,10 @@ describe('the keyboard ring', () => {
       'Help +bars',
       'page 3 +bars',
       'Settings +bars',
-      'compare +bars',
-      'scroll +bars',
-      'two +bars',
-      'single +bars',
+      'Compare editions +bars',
+      'Scroll through the pages +bars',
+      'Two pages +bars',
+      'One page +bars',
       'Library +bars',
       'page',
     ])
@@ -4402,7 +4406,7 @@ describe('the keyboard ring', () => {
     pressHere('Tab')
     pressHere('Tab')
     pressHere('Tab')
-    expect(focused()).toBe('two')
+    expect(focused()).toBe('Two pages')
     pressHere('Escape')
     expect(barsUp(host)).toBe(false)
     expect(focused()).toBe('page')
@@ -4555,7 +4559,7 @@ describe('the turn buttons and the spoken position', () => {
     expect(button(host, 'Next page')).toBeUndefined()
     press('Escape')
     press('Tab')
-    click(button(host, 'scroll'))
+    click(button(host, 'Scroll through the pages'))
     expect(button(host, 'Next page')).toBeUndefined()
   })
 

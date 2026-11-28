@@ -1,4 +1,4 @@
-import { BOOK_LAYOUTS, type BookLayout } from '../layouts'
+import { BOOK_LAYOUT_WORDS, BOOK_LAYOUTS, type BookLayout } from '../layouts'
 import type { ReaderModule } from '../module'
 
 /**
@@ -17,4 +17,5 @@ export const bookLayoutModule: ReaderModule<BookLayoutPrefs> = {
   label: 'Layout',
   defaults: { mode: 'scroll', paged: false, hideTranslation: false },
   options: { mode: [...BOOK_LAYOUTS] },
+  optionWords: { mode: BOOK_LAYOUT_WORDS },
 }

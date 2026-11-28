@@ -9,11 +9,18 @@ import * as config from '../src/config'
 import * as curation from '../src/curation'
 import type { LibraryDir } from '../src/libraries'
 import '../src/index.css'
+import {
+  BOOK_LAYOUT_WORDS,
+  BOOK_LAYOUTS,
+  PAGE_LAYOUT_WORDS,
+  PAGE_LAYOUTS_COMPARED,
+} from '../src/layouts'
 import { Login } from '../src/Login'
 import { Proposals } from '../src/Proposals'
 import { RootRow } from '../src/RootRow'
 import { RuleList } from '../src/RuleList'
 import type { Rule } from '../src/rules'
+import { TopBar } from '../src/TopBar'
 import { mount } from './support/mount'
 import type * as usersApi from '../src/users'
 
@@ -237,6 +244,66 @@ describe('headings — §4.2', () => {
     const h1 = host?.querySelector('.account > .page-header h1.page-title')
     if (!h1) throw new Error('no h1')
     expect(getComputedStyle(h1).fontSize).toBe(sizeOfAnH2Beside(h1))
+  })
+})
+
+describe('the reader’s top bar', () => {
+  /** Each button's name and description, computed by vitest in the page. */
+  const each = async (named: [name: string, description: string][]) => {
+    for (const [name, description] of named) {
+      const button = page.getByRole('button', { name, exact: true })
+      await expect.element(button).toHaveAccessibleName(name)
+      await expect.element(button).toHaveAccessibleDescription(description)
+    }
+  }
+
+  it('names the page reader’s layouts and ⚙ in words, each described by its hover text', async () => {
+    mount(
+      <TopBar
+        editionLine="Raw"
+        layouts={PAGE_LAYOUTS_COMPARED}
+        layoutWords={PAGE_LAYOUT_WORDS}
+        mode="single"
+        onMode={() => {}}
+        settingsOpen={false}
+        onSettings={() => {}}
+        onLeave={() => {}}
+      />,
+    )
+    await each([
+      ['One page', 'One page'],
+      ['Two pages', 'Two pages'],
+      ['Scroll through the pages', 'Scroll through the pages'],
+      ['Compare editions', 'Compare editions'],
+      ['Settings', 'Settings (s)'],
+    ])
+  })
+
+  it('names the book reader’s layouts and its paged switch in words, the switch described as on or off', async () => {
+    mount(
+      <TopBar
+        editionLine="English"
+        layouts={BOOK_LAYOUTS}
+        layoutWords={BOOK_LAYOUT_WORDS}
+        mode="scroll"
+        onMode={() => {}}
+        paged
+        onPaged={() => {}}
+        settingsOpen={false}
+        onSettings={() => {}}
+        onLeave={() => {}}
+      />,
+    )
+    await each([
+      ['One edition', 'One edition'],
+      ['Compare editions', 'Compare editions'],
+      [
+        'Each sentence over its translation',
+        'Each sentence over its translation',
+      ],
+      ['Page turning', 'Page turning: on'],
+      ['Settings', 'Settings (s)'],
+    ])
   })
 })
 

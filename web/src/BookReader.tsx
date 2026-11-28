@@ -151,7 +151,7 @@ import {
   sliceFor,
   sliceReset,
 } from './module'
-import { BOOK_LAYOUTS } from './layouts'
+import { BOOK_LAYOUT_WORDS, BOOK_LAYOUTS } from './layouts'
 import { work as workDetail, type WorkDetail } from './library'
 import { bookLayoutModule } from './modules/bookLayout'
 import {
@@ -183,6 +183,7 @@ import {
 import { fitModule } from './modules/fit'
 import {
   enabledModules,
+  TOGGLE_KEY as HELP_KEY,
   helpModule,
   TOGGLE_INTENT as HELP_TOGGLE,
 } from './modules/help'
@@ -2390,6 +2391,7 @@ export function BookReader({
                 : edition.label
           }
           layouts={other === undefined ? undefined : BOOK_LAYOUTS}
+          layoutWords={BOOK_LAYOUT_WORDS}
           mode={mode}
           onMode={(to) => change(bookLayoutModule.id, 'mode', to)}
           paged={pagedPref}
@@ -2587,6 +2589,7 @@ export function BookReader({
                 className="reader-help"
                 aria-label="Help"
                 aria-expanded={panel === 'help'}
+                title={`Help (${HELP_KEY})`}
                 onClick={() => toggle('help')}
               >
                 ?

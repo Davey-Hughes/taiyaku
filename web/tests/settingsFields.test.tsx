@@ -75,6 +75,41 @@ describe('FieldControl', () => {
     ).toEqual(['off', 'on-select', 'on select'])
   })
 
+  it('shows a select’s values by their declared words in the panel’s case, each option keeping its value', () => {
+    const field: Field = {
+      key: 'mode',
+      kind: 'select',
+      options: ['single', 'two', 'scroll'],
+      words: { single: 'One page', two: 'Two pages' },
+    }
+    const shown = (sentenceCase: boolean) => {
+      const host = mount(
+        <FieldControl
+          field={field}
+          value="two"
+          onChange={() => {}}
+          sentenceCase={sentenceCase}
+        />,
+      )
+      return [...host.querySelectorAll('option')].map((o) => [
+        o.value,
+        o.textContent,
+        o.selected,
+      ])
+    }
+    // The reader's panel writes its words in lowercase, View's as sentences.
+    expect(shown(false)).toEqual([
+      ['single', 'one page', false],
+      ['two', 'two pages', true],
+      ['scroll', 'scroll', false],
+    ])
+    expect(shown(true)).toEqual([
+      ['single', 'One page', false],
+      ['two', 'Two pages', true],
+      ['scroll', 'Scroll', false],
+    ])
+  })
+
   it('summarises an object rather than inventing a control for it', () => {
     const host = mount(
       <FieldControl

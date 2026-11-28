@@ -5,6 +5,8 @@ import {
   humanize,
   nestedCount,
   nestedSummary,
+  optionWord,
+  type Field,
   withFieldValue,
 } from '../src/settingsPanel'
 import { MS_SCALE } from './support/sliderScale'
@@ -49,6 +51,47 @@ describe('fieldsOf', () => {
 
   it('is empty for a module with nothing to tune, so a generated section renders no controls', () => {
     expect(fieldsOf({})).toEqual([])
+  })
+
+  it('carries the words a module declares for a choice’s values, and none for a choice it declares none for', () => {
+    expect(
+      fieldsOf(
+        { mode: 'two', filter: 'smooth' },
+        { mode: ['single', 'two'], filter: ['smooth', 'crisp'] },
+        {},
+        { mode: { single: 'One page', two: 'Two pages' } },
+      ),
+    ).toEqual([
+      {
+        key: 'mode',
+        kind: 'select',
+        options: ['single', 'two'],
+        words: { single: 'One page', two: 'Two pages' },
+      },
+      { key: 'filter', kind: 'select', options: ['smooth', 'crisp'] },
+    ])
+  })
+})
+
+describe('optionWord', () => {
+  const field: Field = {
+    key: 'mode',
+    kind: 'select',
+    options: ['single', 'two', 'scroll'],
+    words: { single: 'One page', two: 'Two pages' },
+  }
+
+  it('shows a value by its declared words, and one with none by its own spelling', () => {
+    expect(
+      ['single', 'two', 'scroll'].map((o) => optionWord(field, o)),
+    ).toEqual(['One page', 'Two pages', 'scroll'])
+  })
+
+  it('takes no inherited key for a word, and needs no words at all', () => {
+    expect(optionWord(field, 'toString')).toBe('toString')
+    expect(optionWord({ key: 'x', kind: 'select', options: ['a'] }, 'a')).toBe(
+      'a',
+    )
   })
 })
 

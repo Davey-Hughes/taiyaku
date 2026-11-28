@@ -56,6 +56,7 @@ export function ViewMenu({ keys }: { keys: readonly (keyof BrowsePrefs)[] }) {
     browseModule.defaults,
     browseModule.options,
     browseModule.sliders,
+    browseModule.optionWords,
   )
   const shown = keys.flatMap((key) => fields.filter((f) => f.key === key))
   return (

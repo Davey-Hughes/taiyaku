@@ -22,7 +22,8 @@ import {
 } from './modules/motion'
 import { readoutRow, type ReadoutsPrefs } from './modules/readouts'
 import { stepFor } from './modules/direction'
-import type { Layout } from './layouts'
+import { TOGGLE_KEY as HELP_KEY } from './modules/help'
+import { type Layout, PAGE_LAYOUT_WORDS } from './layouts'
 import type { RailShare } from './tiles'
 import { TopBar } from './TopBar'
 
@@ -589,6 +590,7 @@ export function Chrome({
           editionLine={editionLine}
           series={series}
           layouts={layouts}
+          layoutWords={PAGE_LAYOUT_WORDS}
           mode={mode}
           onMode={onMode}
           settingsOpen={settingsOpen}
@@ -669,6 +671,7 @@ export function Chrome({
               className="reader-help"
               aria-label="Help"
               aria-expanded={helpOpen}
+              title={`Help (${HELP_KEY})`}
               onClick={onHelp}
             >
               ?

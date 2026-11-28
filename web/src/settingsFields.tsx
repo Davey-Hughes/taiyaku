@@ -3,6 +3,7 @@ import {
   humanize,
   nestedCount,
   nestedSummary,
+  optionWord,
   type Field,
   type SliderScale,
 } from './settingsPanel'
@@ -90,9 +91,11 @@ export function FieldControl({
           value={typeof value === 'string' ? value : ''}
           onChange={(e) => onChange(e.target.value)}
         >
+          {/* Declared words take the panel's case as a spelled value does:
+              lowercase in the reader's panel, a sentence in View's. */}
           {(field.options ?? []).map((option) => (
             <option key={option} value={option}>
-              {word(option)}
+              {word(optionWord(field, option))}
             </option>
           ))}
         </select>

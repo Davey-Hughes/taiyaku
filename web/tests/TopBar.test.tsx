@@ -1,13 +1,20 @@
 import { MemoryRouter } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { mount, rerender } from './support/mount'
-import { PAGE_LAYOUTS } from '../src/layouts'
+import {
+  BOOK_LAYOUT_WORDS,
+  BOOK_LAYOUTS,
+  PAGE_LAYOUT_WORDS,
+  PAGE_LAYOUTS,
+  PAGE_LAYOUTS_COMPARED,
+} from '../src/layouts'
 import { TopBar, type TopBarProps } from '../src/TopBar'
 
 const props = (over: Partial<TopBarProps> = {}): TopBarProps => ({
   title: 'Dandadan',
   editionLine: 'Vol. 1 · Raw, monochrome',
   layouts: PAGE_LAYOUTS,
+  layoutWords: PAGE_LAYOUT_WORDS,
   mode: 'single',
   onMode: vi.fn(),
   settingsOpen: false,
@@ -21,6 +28,14 @@ const button = (host: ParentNode, text: string) =>
   [...host.querySelectorAll('button')].find(
     (b) => b.textContent === text,
   ) as HTMLButtonElement
+
+/** The layout group's buttons, each as its name's text, hover text and pressed state. */
+const layoutButtons = (host: ParentNode) =>
+  [...host.querySelectorAll('[aria-label="Layout"] button')].map((b) => [
+    b.textContent,
+    b.getAttribute('title'),
+    b.getAttribute('aria-pressed'),
+  ])
 
 describe('TopBar', () => {
   it('leaves for the library', () => {
@@ -86,7 +101,7 @@ describe('TopBar', () => {
   it('marks the layout on screen pressed, and the other two not', () => {
     const host = mount(<TopBar {...props({ mode: 'two' })} />)
     expect(
-      ['single', 'two', 'scroll'].map((m) =>
+      ['One page', 'Two pages', 'Scroll through the pages'].map((m) =>
         button(host, m).getAttribute('aria-pressed'),
       ),
     ).toEqual(['false', 'true', 'false'])
@@ -95,8 +110,81 @@ describe('TopBar', () => {
   it('asks for the layout a button names', () => {
     const onMode = vi.fn()
     const host = mount(<TopBar {...props({ onMode })} />)
-    button(host, 'scroll').click()
+    button(host, 'Scroll through the pages').click()
     expect(onMode).toHaveBeenCalledWith('scroll')
+  })
+
+  it("names each of the page reader's layouts in words, its hover text the same words", () => {
+    const host = mount(
+      <TopBar
+        editionLine="Raw"
+        layouts={PAGE_LAYOUTS_COMPARED}
+        layoutWords={PAGE_LAYOUT_WORDS}
+        mode="compare"
+        onMode={vi.fn()}
+        settingsOpen={false}
+        onSettings={vi.fn()}
+        onLeave={vi.fn()}
+      />,
+    )
+    expect(layoutButtons(host)).toEqual([
+      ['One page', 'One page', 'false'],
+      ['Two pages', 'Two pages', 'false'],
+      ['Scroll through the pages', 'Scroll through the pages', 'false'],
+      ['Compare editions', 'Compare editions', 'true'],
+    ])
+  })
+
+  it("names each of the book reader's layouts and its paged switch in words, the switch's hover text saying whether it is on", () => {
+    const bar = (paged: boolean) => (
+      <TopBar
+        editionLine="English"
+        layouts={BOOK_LAYOUTS}
+        layoutWords={BOOK_LAYOUT_WORDS}
+        mode="scroll"
+        onMode={vi.fn()}
+        paged={paged}
+        onPaged={vi.fn()}
+        settingsOpen={false}
+        onSettings={vi.fn()}
+        onLeave={vi.fn()}
+      />
+    )
+    const host = mount(bar(false))
+    expect(layoutButtons(host)).toEqual([
+      ['One edition', 'One edition', 'true'],
+      ['Compare editions', 'Compare editions', 'false'],
+      [
+        'Each sentence over its translation',
+        'Each sentence over its translation',
+        'false',
+      ],
+      ['Page turning', 'Page turning: off', 'false'],
+    ])
+    // The name stays put as the switch turns on; only its pressed state and
+    // its hover text say so.
+    rerender(bar(true))
+    expect(layoutButtons(host).at(-1)).toEqual([
+      'Page turning',
+      'Page turning: on',
+      'true',
+    ])
+  })
+
+  it('names the paged switch in words where it is alone in the group', () => {
+    const host = mount(
+      <TopBar
+        {...props({ layouts: undefined, paged: false, onPaged: vi.fn() })}
+      />,
+    )
+    expect(layoutButtons(host)).toEqual([
+      ['Page turning', 'Page turning: off', 'false'],
+    ])
+  })
+
+  it('shows ⚙ its name and its key as hover text', () => {
+    const host = mount(<TopBar {...props()} />)
+    expect(button(host, 'Settings').getAttribute('title')).toBe('Settings (s)')
   })
 
   it('opens settings, and says whether they are open', () => {
@@ -141,6 +229,7 @@ describe('TopBar', () => {
         title="T"
         editionLine="English"
         layouts={['scroll', 'compare'] as const}
+        layoutWords={BOOK_LAYOUT_WORDS}
         mode="scroll"
         onMode={onMode}
         settingsOpen={false}
@@ -151,8 +240,8 @@ describe('TopBar', () => {
     const group = host.querySelector('[aria-label="Layout"]')
     expect(
       [...(group?.querySelectorAll('button') ?? [])].map((b) => b.textContent),
-    ).toEqual(['scroll', 'compare'])
-    button(host, 'compare').click()
+    ).toEqual(['One edition', 'Compare editions'])
+    button(host, 'Compare editions').click()
     expect(onMode).toHaveBeenCalledWith('compare')
   })
 

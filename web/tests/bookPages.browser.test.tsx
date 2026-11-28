@@ -750,11 +750,11 @@ describe('the reader’s place, through a switch of how the text is set', () => 
       { vertical: true },
     )
     expect(topBlock(textOf(host))).toBe(15)
-    await layoutTo(host, 'interlinear')
+    await layoutTo(host, 'Each sentence over its translation')
     expect(textOf(host).querySelector('.book-interlinear')).not.toBeNull()
     expect(textOf(host).dataset.vertical).toBeUndefined()
     expect(topBlock(textOf(host))).toBe(15)
-    await layoutTo(host, 'scroll')
+    await layoutTo(host, 'One edition')
     expect(textOf(host).dataset.vertical).toBe('true')
     expect(topBlock(textOf(host))).toBe(15)
   })

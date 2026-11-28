@@ -169,6 +169,7 @@ export function Settings({
             mod.defaults as object,
             mod.options,
             mod.sliders,
+            mod.optionWords,
           )
           if (fields.length === 0) return null
           const modulePrefs = (prefs[mod.id] ?? mod.defaults) as Record<

@@ -1,6 +1,9 @@
 import { act } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ReaderModule } from '../src/module'
+import { bookLayoutModule } from '../src/modules/bookLayout'
+import { fitModule } from '../src/modules/fit'
+import { layoutModule } from '../src/modules/layout'
 import { Settings } from '../src/Settings'
 import { mount } from './support/mount'
 import { MS_SCALE } from './support/sliderScale'
@@ -222,6 +225,53 @@ describe('Settings', () => {
     // The `'object'`-kind field: no editable control, just the reset-only
     // entry count `nestedSummary`/`nestedCount` compute.
     expect(host.textContent).toContain('2 set')
+  })
+
+  it('shows each reader’s layouts and the upscale filters in words, a saved value choosing its words, each stored value as it was', () => {
+    const host = mount(
+      <Settings
+        visible
+        modules={
+          [layoutModule, bookLayoutModule, fitModule] as ReaderModule<unknown>[]
+        }
+        prefs={{
+          layout: { mode: 'two' },
+          'book-layout': { ...bookLayoutModule.defaults, mode: 'interlinear' },
+          fit: { ...fitModule.defaults, upscaleFilter: 'crisp' },
+        }}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+        onClose={vi.fn()}
+        onAccount={vi.fn()}
+      />,
+    )
+    const selects = [...host.querySelectorAll('select')]
+    expect(
+      selects.map((s) => [...s.options].map((o) => [o.value, o.textContent])),
+    ).toEqual([
+      [
+        ['single', 'one page'],
+        ['two', 'two pages'],
+        ['scroll', 'scroll through the pages'],
+        ['compare', 'compare editions'],
+      ],
+      [
+        ['scroll', 'one edition'],
+        ['compare', 'compare editions'],
+        ['interlinear', 'each sentence over its translation'],
+      ],
+      [
+        ['smooth', 'smooth (softer lines)'],
+        ['crisp', 'crisp (sharp, blocky edges)'],
+      ],
+    ])
+    expect(
+      selects.map((s) => [s.value, s.selectedOptions[0]?.textContent]),
+    ).toEqual([
+      ['two', 'two pages'],
+      ['interlinear', 'each sentence over its translation'],
+      ['crisp', 'crisp (sharp, blocky edges)'],
+    ])
   })
 
   it('seeds every control from prefs when a slice already exists, not from defaults', () => {

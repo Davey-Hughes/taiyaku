@@ -515,13 +515,13 @@ describe('the reader’s place, through a Reset of the text’s size', () => {
   }
 })
 
-/** The top bar's button for layout `mode` pressed, and the bars hidden again. */
-async function switchTo(host: HTMLElement, mode: string) {
+/** The top bar's layout button `name` pressed, and the bars hidden again. */
+async function switchTo(host: HTMLElement, name: string) {
   await pressed('Tab')
   const button = [
     ...host.querySelectorAll('[aria-label="Layout"] button'),
-  ].find((b) => b.textContent === mode)
-  if (!button) throw new Error(`no ${mode} layout in the top bar`)
+  ].find((b) => b.textContent === name)
+  if (!button) throw new Error(`no ${name} layout in the top bar`)
   await act(async () => {
     ;(button as HTMLElement).click()
   })
@@ -553,7 +553,7 @@ describe('the reader’s place, from one layout to another', () => {
       )
       const text = textOf(host)
       const first = await partWay(text, flow)
-      await switchTo(host, 'compare')
+      await switchTo(host, 'Compare editions')
       expect(text.dataset.compared).toBeDefined()
       expect(Math.abs(startOf(text, charBox(text, first)))).toBeLessThanOrEqual(
         1,
@@ -571,7 +571,7 @@ describe('the reader’s place, from one layout to another', () => {
     const { block } = topOf(text)
     const row = text.querySelector(`[data-block="${block}"]`) as HTMLElement
     expect(startOf(text, row.getBoundingClientRect())).toBeLessThan(-1)
-    await switchTo(host, 'scroll')
+    await switchTo(host, 'One edition')
     expect(text.dataset.compared).toBeUndefined()
     // Past the screen's start only by the half-leading above its first line.
     const start = startOf(text, charBox(text, { block, at: 0 }))

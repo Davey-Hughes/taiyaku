@@ -40,6 +40,8 @@ export interface Field {
   kind: FieldKind
   /** The values a `'select'` field may take, in the order the module declared them. */
   options?: string[]
+  /** A `'select'`'s words for its values, where its module declares any (`ReaderModule.optionWords`). */
+  words?: Record<string, string>
   /** A `'slider'`'s scale, as its module declared it. */
   scale?: SliderScale
   /** A `'slider'`'s default: under the mark, and what a double-click restores. */
@@ -81,6 +83,7 @@ export function fieldsOf<P extends object>(
   defaults: P,
   options: Record<string, string[]> = {},
   sliders: Record<string, SliderScale> = {},
+  words: Record<string, Record<string, string>> = {},
 ): Field[] {
   return Object.entries(defaults).map(([key, value]) => {
     const kind = fieldKind(value)
@@ -89,7 +92,12 @@ export function fieldsOf<P extends object>(
     // its own default's type, and inferring from the *value* is what keeps
     // this panel from having to know which module it is looking at.
     if (kind === 'string' && options[key]?.length)
-      return { key, kind: 'select', options: options[key] }
+      return {
+        key,
+        kind: 'select',
+        options: options[key],
+        ...(Object.hasOwn(words, key) ? { words: words[key] } : {}),
+      }
     // A number with a declared scale is a slider, by the same rule. Own keys
     // only: an inherited `toString` is no scale.
     if (kind === 'number' && Object.hasOwn(sliders, key))
@@ -166,6 +174,17 @@ export function nestedCount(value: unknown): number {
  */
 export function nestedSummary(count: number): string {
   return count === 0 ? 'none set' : `${count} set`
+}
+
+/**
+ * What a select shows for one of its values: the words its module declares,
+ * or the value's own spelling. The option's value is the stored one either
+ * way, so only what is read changes. Own keys only: an inherited `toString`
+ * is no word.
+ */
+export function optionWord(field: Field, option: string): string {
+  const words = field.words
+  return words && Object.hasOwn(words, option) ? words[option] : option
 }
 
 /**

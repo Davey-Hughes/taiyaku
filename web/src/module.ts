@@ -52,6 +52,18 @@ export interface ReaderModule<P> {
    */
   options?: Record<string, string[]>
   /**
+   * The words a choice's values are shown by, keyed by preference name and
+   * then by value; a value with none is shown by its own spelling
+   * (`settingsPanel.ts`'s `humanize`). Only what is shown: the stored value
+   * is still the option itself, so a saved setting loads whatever the words.
+   *
+   * A value can be an id rather than a word: `layout`'s `two` is two pages
+   * side by side, and `scroll` names a different layout in each reader. The
+   * panel is generated from these declarations and holds no knowledge of
+   * any one module (`ReaderModule`), so the module declares its own words.
+   */
+  optionWords?: Record<string, Record<string, string>>
+  /**
    * The scale a `number` preference is drawn on, keyed by preference name —
    * which turns its control from a number box into a slider, for a value
    * judged by eye as it changes. Its default must sit at the scale's middle

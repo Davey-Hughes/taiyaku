@@ -1,13 +1,16 @@
 import type { CSSProperties, ReactNode } from 'react'
 import { Link } from 'react-router'
 import type { AnyLayout } from './layouts'
+import { TOGGLE_KEY as SETTINGS_KEY } from './modules/settings'
 import type { Mode } from './pairing'
 
 /**
  * Each layout drawn rather than named (spec 2026-09-17 §8.3): at 390 px the
- * words would leave the title almost no room. The word stays in the button
- * as visually hidden text, so its accessible name — and the `textContent` the
- * reader's tests find it by — is still the layout's name.
+ * words would leave the title almost no room. Its words stay in the button as
+ * visually hidden text, so its accessible name — and the `textContent` the
+ * reader's tests find it by — is what the reader calls it (`layouts.ts`),
+ * and its `title` shows the same words to a mouse. A touch screen shows no
+ * `title`, so it says nothing the name and the pressed state do not.
  */
 const ICONS: Record<AnyLayout, ReactNode> = {
   single: <rect x="7" y="4" width="10" height="16" />,
@@ -32,6 +35,15 @@ const ICONS: Record<AnyLayout, ReactNode> = {
   ),
   interlinear: <path d="M4 6h16M7 9.5h10M4 14h16M7 17.5h10" />,
 }
+
+/**
+ * The paged switch's name. It stays the same pressed or not, as a toggle's
+ * must, `aria-pressed` saying which; the hover text adds on or off, which the
+ * lit icon shows only to a reader who knows what it stands for. A noun, so
+ * "Page turning: off" reads as a state, where a verb's "Turn pages: off" reads
+ * as the command to switch it off.
+ */
+const PAGED_WORDS = 'Page turning'
 
 /** A page and the way it turns: the book reader's paged switch. */
 const PAGED_ICON = (
@@ -77,6 +89,8 @@ export interface TopBarProps<L extends AnyLayout = Mode> {
    * switch; a reader with none draws no layout group.
    */
   layouts?: readonly L[]
+  /** What the reader calls each layout: its button's name and hover text. */
+  layoutWords: Record<L, string>
   mode?: L
   onMode?: (mode: L) => void
   /** Whether the text is turned page by page, and its switch, drawn in the layout group, or alone in it. */
@@ -108,6 +122,7 @@ export function TopBar<L extends AnyLayout = Mode>({
   editionLine,
   series,
   layouts,
+  layoutWords,
   mode,
   onMode,
   paged,
@@ -155,20 +170,26 @@ export function TopBar<L extends AnyLayout = Mode>({
                 key={m}
                 type="button"
                 aria-pressed={m === mode}
+                title={layoutWords[m]}
                 onClick={() => onMode(m)}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   {ICONS[m]}
                 </svg>
-                <span className="visually-hidden">{m}</span>
+                <span className="visually-hidden">{layoutWords[m]}</span>
               </button>
             ))}
           {onPaged && (
-            <button type="button" aria-pressed={paged} onClick={onPaged}>
+            <button
+              type="button"
+              aria-pressed={paged}
+              title={`${PAGED_WORDS}: ${paged ? 'on' : 'off'}`}
+              onClick={onPaged}
+            >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 {PAGED_ICON}
               </svg>
-              <span className="visually-hidden">paged</span>
+              <span className="visually-hidden">{PAGED_WORDS}</span>
             </button>
           )}
         </div>
@@ -177,6 +198,7 @@ export function TopBar<L extends AnyLayout = Mode>({
         type="button"
         className="reader-icon-button"
         aria-expanded={settingsOpen}
+        title={`Settings (${SETTINGS_KEY})`}
         onClick={onSettings}
       >
         <svg viewBox="0 0 24 24" aria-hidden="true">

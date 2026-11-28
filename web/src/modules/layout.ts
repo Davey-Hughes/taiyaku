@@ -1,5 +1,5 @@
 import type { ReaderModule } from '../module'
-import type { Layout } from '../layouts'
+import { type Layout, PAGE_LAYOUT_WORDS } from '../layouts'
 
 /**
  * How the page area is laid out: one page, a two-page spread, a continuous
@@ -32,4 +32,5 @@ export const layoutModule: ReaderModule<LayoutPrefs> = {
   label: 'Layout',
   defaults: { mode: 'single' },
   options: { mode: ['single', 'two', 'scroll', 'compare'] },
+  optionWords: { mode: PAGE_LAYOUT_WORDS },
 }

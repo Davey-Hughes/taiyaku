@@ -39,6 +39,12 @@ export const fitModule: ReaderModule<FitPrefs> = {
   label: 'Fit',
   defaults: { upscaleToFit: true, upscaleFilter: 'smooth', gap: 0 },
   options: { upscaleFilter: ['smooth', 'crisp'] },
+  optionWords: {
+    upscaleFilter: {
+      smooth: 'Smooth (softer lines)',
+      crisp: 'Crisp (sharp, blocky edges)',
+    } satisfies Record<FitPrefs['upscaleFilter'], string>,
+  },
 }
 
 /**

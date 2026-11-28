@@ -26,3 +26,26 @@ export const BOOK_LAYOUTS: readonly BookLayout[] = [
 
 /** Any reader's layout, as the top bar draws them. */
 export type AnyLayout = Layout | BookLayout
+
+/**
+ * What the page reader calls each layout: its top bar button's name and hover
+ * text, and its word in the settings panel. The stored value stays the key,
+ * so a word can change and a saved layout still loads.
+ */
+export const PAGE_LAYOUT_WORDS: Record<Layout, string> = {
+  single: 'One page',
+  two: 'Two pages',
+  scroll: 'Scroll through the pages',
+  compare: 'Compare editions',
+}
+
+/**
+ * What the book reader calls each layout, as `PAGE_LAYOUT_WORDS` does. The
+ * one-edition layout is stored as `scroll`, but the paged switch decides
+ * whether it scrolls or turns, so its words say neither.
+ */
+export const BOOK_LAYOUT_WORDS: Record<BookLayout, string> = {
+  scroll: 'One edition',
+  compare: 'Compare editions',
+  interlinear: 'Each sentence over its translation',
+}

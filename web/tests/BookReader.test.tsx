@@ -528,6 +528,19 @@ const edition = (host: HTMLElement) =>
   host.querySelector('.book-text [data-block="0"]')?.textContent
 
 /**
+ * The top bar's layout button of these words. It throws on a miss, so a test
+ * that switches by a name the bar does not show fails there, rather than
+ * skipping the switch and passing on what follows.
+ */
+function layoutButton(host: HTMLElement, name: string): HTMLElement {
+  const button = [
+    ...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button'),
+  ].find((b) => b.textContent === name)
+  if (!button) throw new Error(`no layout button named "${name}"`)
+  return button
+}
+
+/**
  * A speech engine that speaks nothing: what it was asked to say, each
  * utterance's `start` and `end` fired when a test says, and the voices it has.
  */
@@ -611,10 +624,10 @@ describe('BookReader', () => {
     expect(
       [...layouts].map((b) => [b.textContent, b.getAttribute('aria-pressed')]),
     ).toEqual([
-      ['scroll', 'true'],
-      ['compare', 'false'],
-      ['interlinear', 'false'],
-      ['paged', 'false'],
+      ['One edition', 'true'],
+      ['Compare editions', 'false'],
+      ['Each sentence over its translation', 'false'],
+      ['Page turning', 'false'],
     ])
     tap(host)
     expect(host.querySelector('.reader-top-bar')).toBeNull()
@@ -664,6 +677,17 @@ describe('BookReader', () => {
     expect(host.querySelector('.reader-top-bar')).not.toBeNull()
     press('Escape')
     expect(onLeave).toHaveBeenCalledOnce()
+  })
+
+  it('shows its ? its name and its key as hover text, as the comic reader’s does', async () => {
+    const { host } = await opened()
+    tap(host)
+    expect(
+      [...host.querySelectorAll('.reader-help')].map((b) => [
+        b.getAttribute('aria-label'),
+        b.getAttribute('title'),
+      ]),
+    ).toEqual([['Help', 'Help (?)']])
   })
 
   it('opens settings on s and help on ?, and Escape closes the panel before the bars', async () => {
@@ -1416,17 +1440,13 @@ describe('BookReader', () => {
     press('p')
     expect(host.querySelector('.book-peek')).not.toBeNull()
     press('Tab')
-    const layout = (name: string) =>
-      [
-        ...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button'),
-      ].find((b) => b.textContent === name)
-    act(() => layout('compare')?.click())
+    act(() => layoutButton(host, 'Compare editions').click())
     press('s')
     expect(host.querySelector('[aria-label="Settings"]')).not.toBeNull()
     press('p')
     press('Escape')
     expect(host.querySelector('[aria-label="Settings"]')).toBeNull()
-    act(() => layout('scroll')?.click())
+    act(() => layoutButton(host, 'One edition').click())
     expect(host.querySelector('.book-peek')).toBeNull()
   })
 
@@ -1479,17 +1499,13 @@ describe('BookReader', () => {
     const { host } = await opened()
     tap(host)
     scrolledPast(2)
-    const layout = (name: string) =>
-      [...host.querySelectorAll('[aria-label="Layout"] button')].find(
-        (b) => b.textContent === name,
-      ) as HTMLElement
-    act(() => layout('compare').click())
+    act(() => layoutButton(host, 'Compare editions').click())
     expect(host.querySelectorAll('.book-row')).toHaveLength(4)
     expect(scrolledTo().at(-1)).toBe('2')
     expect(localStorage.getItem('taiyaku.prefs.book-layout')).toContain(
       'compare',
     )
-    act(() => layout('scroll').click())
+    act(() => layoutButton(host, 'One edition').click())
     expect(host.querySelectorAll('.book-row')).toHaveLength(0)
     expect(edition(host)).toBe('CHAPTER ONE')
     expect(scrolledTo().at(-1)).toBe('2')
@@ -1554,7 +1570,7 @@ describe('BookReader', () => {
       [...host.querySelectorAll('[aria-label="Layout"] button')].map(
         (b) => b.textContent,
       ),
-    ).toEqual(['paged'])
+    ).toEqual(['Page turning'])
   })
 
   it('lays a paged book out in pages, and opens on the page its saved block is on', async () => {
@@ -1778,7 +1794,7 @@ describe('BookReader', () => {
     touch(host, { x: 300 })
     const switched = () =>
       [...host.querySelectorAll('[aria-label="Layout"] button')].find(
-        (b) => b.textContent === 'paged',
+        (b) => b.textContent === 'Page turning',
       ) as HTMLElement
     expect(switched().getAttribute('aria-pressed')).toBe('false')
     expect(readout(host)).toMatch(/^\d+% · /)
@@ -1946,7 +1962,7 @@ describe('BookReader', () => {
     expect(size()).toBe('20px')
     const switched = [
       ...host.querySelectorAll('[aria-label="Layout"] button'),
-    ].find((b) => b.textContent === 'paged') as HTMLElement
+    ].find((b) => b.textContent === 'Page turning') as HTMLElement
     act(() => switched.click())
     expect(text().dataset.paged).toBeUndefined()
     frame()
@@ -4916,14 +4932,10 @@ describe('BookReader', () => {
     press('c')
     expect(host.querySelector('.book-pinning')).toBeNull()
     press('Tab')
-    const layout = (name: string) =>
-      [
-        ...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button'),
-      ].find((b) => b.textContent === name)
-    act(() => layout('compare')?.click())
+    act(() => layoutButton(host, 'Compare editions').click())
     press('c')
     expect(host.querySelector('.book-pinning')).not.toBeNull()
-    act(() => layout('scroll')?.click())
+    act(() => layoutButton(host, 'One edition').click())
     expect(host.querySelector('.book-pinning')).toBeNull()
   })
 
@@ -5120,7 +5132,7 @@ describe('BookReader', () => {
     press('Tab')
     act(() =>
       [...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button')]
-        .find((b) => b.textContent === 'scroll')
+        .find((b) => b.textContent === 'One edition')
         ?.click(),
     )
     expect(lit(host)).toEqual(['3', '4', '5'])
@@ -5173,7 +5185,7 @@ describe('BookReader', () => {
     press('Tab')
     act(() =>
       [...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button')]
-        .find((b) => b.textContent === 'compare')
+        .find((b) => b.textContent === 'Compare editions')
         ?.click(),
     )
     // French is read, swapped to from English, and Korean is the edition
@@ -5190,19 +5202,15 @@ describe('BookReader', () => {
   it('lets go of a lit pair of sentences when compare is left', async () => {
     const { host } = await opened(undefined, sentenced)
     press('Tab')
-    const layout = (name: string) =>
-      [
-        ...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button'),
-      ].find((b) => b.textContent === name)
-    act(() => layout('compare')?.click())
+    act(() => layoutButton(host, 'Compare editions').click())
     const second = host.querySelector(
       '[data-pick="left:1"] [data-sentence="2"]',
     )
     touch(host, { on: second, at: 80_000 })
     touch(host, { on: second, at: 80_150 })
     expect(host.querySelectorAll('[data-sentence][data-lit]')).toHaveLength(2)
-    act(() => layout('scroll')?.click())
-    act(() => layout('compare')?.click())
+    act(() => layoutButton(host, 'One edition').click())
+    act(() => layoutButton(host, 'Compare editions').click())
     expect(host.querySelectorAll('[data-sentence][data-lit]')).toHaveLength(0)
   })
 
@@ -6599,11 +6607,7 @@ describe('a book’s links', () => {
     expect(page()).toBe(1)
     touch(host, { on: host.querySelector('[data-pick="left:1"] a') })
     expect(page()).toBe(2)
-    const layout = (name: string) =>
-      [
-        ...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button'),
-      ].find((b) => b.textContent === name)
-    act(() => layout('paged')?.click())
+    act(() => layoutButton(host, 'Page turning').click())
     vi.mocked(Element.prototype.scrollIntoView).mockClear()
     act(() => backButton(host)?.click())
     // Placed by the row holding block 1, not scrolled a third of the way into
@@ -6627,11 +6631,7 @@ describe('a book’s links', () => {
     host.querySelector<HTMLElement>('.book-text')!.scrollTo = vi.fn()
     touch(host, { on: linkIn(host, 2) })
     expect(scrolledTo().at(-1)).toBe('3')
-    const layout = (name: string) =>
-      [
-        ...host.querySelectorAll<HTMLElement>('[aria-label="Layout"] button'),
-      ].find((b) => b.textContent === name)
-    act(() => layout('compare')?.click())
+    act(() => layoutButton(host, 'Compare editions').click())
     act(() => backButton(host)?.click())
     // Placed by the row holding block 0, not by a fraction of a line's
     // height taken into a row's.

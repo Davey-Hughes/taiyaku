@@ -4,6 +4,9 @@ import type { ReaderModule } from '../module'
 
 export const TOGGLE_INTENT = 'help:toggle'
 
+/** The key the help button's hover text names, of the two that open it: the one a reader tries first. */
+export const TOGGLE_KEY = '?'
+
 /**
  * The keybind list.
  *
@@ -24,7 +27,7 @@ export const helpModule: ReaderModule<HelpPrefs> = {
   label: 'Keyboard help',
   defaults: { enabled: true },
   keys: [
-    { key: '?', intent: TOGGLE_INTENT, label: 'show this list of keys' },
+    { key: TOGGLE_KEY, intent: TOGGLE_INTENT, label: 'show this list of keys' },
     { key: 'h', intent: TOGGLE_INTENT, label: 'show this list of keys' },
   ],
 }

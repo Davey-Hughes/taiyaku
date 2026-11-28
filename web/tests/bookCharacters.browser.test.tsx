@@ -734,12 +734,12 @@ describe.each(POINTERS)('a character’s card, by a real %s', (pointer) => {
       [...host.querySelectorAll<HTMLElement>('.reader-layout button')].find(
         (button) => button.textContent === name,
       ) as HTMLElement
-    await press(pointer, middleOf(layout('compare')))
+    await press(pointer, middleOf(layout('Compare editions')))
     expect(host.querySelector('[data-compared]')).not.toBeNull()
     expect(cardEls()).toHaveLength(1)
     expect(CSS.highlights.has('book-mention')).toBe(false)
     expect(CSS.highlights.has('book-lookup-word')).toBe(false)
-    await press(pointer, middleOf(layout('scroll')))
+    await press(pointer, middleOf(layout('One edition')))
     expect(host.querySelector('[data-compared]')).toBeNull()
     expect(cardEls()).toHaveLength(1)
     expect(marks('book-mention')).toEqual(['1:Ned', '2:Ned Reed'])

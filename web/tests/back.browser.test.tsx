@@ -46,6 +46,7 @@ const comic = vi.hoisted(() => ({ real: false }))
 
 vi.mock('../src/App', async (importOriginal) => {
   const { TopBar } = await import('../src/TopBar')
+  const { PAGE_LAYOUT_WORDS } = await import('../src/layouts')
   const { default: App } = await importOriginal<typeof import('../src/App')>()
   return {
     default: (props: AppProps) =>
@@ -55,6 +56,7 @@ vi.mock('../src/App', async (importOriginal) => {
         <div data-testid="reader">
           <TopBar
             editionLine="Raw"
+            layoutWords={PAGE_LAYOUT_WORDS}
             settingsOpen={false}
             onSettings={() => {}}
             onLeave={props.onLeave}

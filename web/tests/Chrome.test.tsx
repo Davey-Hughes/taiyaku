@@ -147,11 +147,13 @@ describe('Chrome', () => {
     expect(host.querySelector('.reader-title')?.textContent).toBe(
       'Volume OneVol. 1 · Raw',
     )
-    expect(buttonNamed(host, 'two')?.getAttribute('aria-pressed')).toBe('true')
+    expect(buttonNamed(host, 'Two pages')?.getAttribute('aria-pressed')).toBe(
+      'true',
+    )
     expect(buttonNamed(host, 'Settings')?.getAttribute('aria-expanded')).toBe(
       'true',
     )
-    buttonNamed(host, 'scroll')?.click()
+    buttonNamed(host, 'Scroll through the pages')?.click()
     expect(onMode).toHaveBeenCalledWith('scroll')
     buttonNamed(host, 'Settings')?.click()
     expect(onSettings).toHaveBeenCalledOnce()
@@ -243,6 +245,15 @@ describe('Chrome', () => {
     it('draws no Help without onHelp', () => {
       const host = mount(<Chrome {...baseProps} />)
       expect(helpIn(host)).toEqual([])
+    })
+
+    it('shows the ? its name and its key as hover text', () => {
+      const host = mount(
+        <Chrome {...baseProps} onHelp={vi.fn()} helpOpen={false} />,
+      )
+      expect(helpIn(host).map((b) => b.getAttribute('title'))).toEqual([
+        'Help (?)',
+      ])
     })
 
     it('ends the readout row with one ? named Help, which toggles Help and says whether it is open', () => {

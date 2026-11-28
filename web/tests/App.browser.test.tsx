@@ -26,7 +26,7 @@ import { ringOf } from './support/ring'
  * a phone.
  *
  * The first two cases guard O65: with the chrome open, `Library` must not sit
- * over the `single` and `two` buttons, both in the top bar (§8.3).
+ * over the One page and Two pages buttons, both in the top bar (§8.3).
  *
  * The mocks are `App.test.tsx`'s, for the reasons that file's header gives:
  * `vi.mock('../src/resolver')` is what lets `App.tsx` load at all without the
@@ -276,10 +276,10 @@ describe('the reader’s two bars, in a browser', () => {
       await readerWithChrome(width, height)
       for (const name of [
         'Library',
-        'single',
-        'two',
-        'scroll',
-        'compare',
+        'One page',
+        'Two pages',
+        'Scroll through the pages',
+        'Compare editions',
         'Settings',
       ]) {
         const control = button(name)
@@ -1011,9 +1011,9 @@ describe('O166: a key pressed on a Settings select', () => {
     // under the select and the typeahead never runs.
     await userEvent.keyboard('s')
     expect(settingsOpen()).toBe(true)
-    // Chromium's typeahead moves from `single` to the next option starting
-    // with `s`. The point is that the select changed at all, which it cannot
-    // while the reader prevents the key's default.
+    // Chromium's typeahead moves from `single` to the next option whose
+    // words start with `s`, scroll's. The point is that the select changed at
+    // all, which it cannot while the reader prevents the key's default.
     expect(layoutSelect().value).toBe('scroll')
   })
 
@@ -1088,10 +1088,10 @@ describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
       const lap = [
         'Library +bars',
         `${SERIES.title} +bars`,
-        'single +bars',
-        'two +bars',
-        'scroll +bars',
-        'compare +bars',
+        'One page +bars',
+        'Two pages +bars',
+        'Scroll through the pages +bars',
+        'Compare editions +bars',
         'Settings +bars',
         'page 3 +bars',
         'Help +bars',
@@ -1113,10 +1113,10 @@ describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
     const lap = [
       'Library +bars',
       `${SERIES.title} +bars`,
-      'single +bars',
-      'two +bars',
-      'scroll +bars',
-      'compare +bars',
+      'One page +bars',
+      'Two pages +bars',
+      'Scroll through the pages +bars',
+      'Compare editions +bars',
       'Settings +bars',
       'page 3 +bars',
       'page',
@@ -1137,10 +1137,10 @@ describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
         'Help +bars',
         'page 3 +bars',
         'Settings +bars',
-        'compare +bars',
-        'scroll +bars',
-        'two +bars',
-        'single +bars',
+        'Compare editions +bars',
+        'Scroll through the pages +bars',
+        'Two pages +bars',
+        'One page +bars',
         `${SERIES.title} +bars`,
         'Library +bars',
         'page',
@@ -1217,10 +1217,10 @@ describe('the keyboard ring, with real keys: every stop and every region (spec 2
     const stops = [
       'Library',
       SERIES.title,
-      'single',
-      'two',
-      'scroll',
-      'compare',
+      'One page',
+      'Two pages',
+      'Scroll through the pages',
+      'Compare editions',
       'Settings',
       'page 3',
       'Help',
@@ -1242,10 +1242,10 @@ describe('the keyboard ring, with real keys: every stop and every region (spec 2
     const stops = [
       'Library',
       SERIES.title,
-      'single',
-      'two',
-      'scroll',
-      'compare',
+      'One page',
+      'Two pages',
+      'Scroll through the pages',
+      'Compare editions',
       'Settings',
     ]
     await tabs(1)
@@ -1442,14 +1442,18 @@ describe('The page takes no selection (O430)', () => {
     expect(seen).toEqual(want)
   })
 
-  it.each(['single', 'two', 'scroll'] as const)(
+  it.each([
+    ['single', 'One page'],
+    ['two', 'Two pages'],
+    ['scroll', 'Scroll through the pages'],
+  ] as const)(
     'in %s mode the page area’s computed user-select is none',
-    async (mode) => {
+    async (mode, words) => {
       localStorage.setItem('taiyaku.prefs.layout', JSON.stringify({ mode }))
       await readerWithChrome(1280, 800)
       const area = document.querySelector('[data-reader-page]') as HTMLElement
       expect({
-        pressed: button(mode).getAttribute('aria-pressed'),
+        pressed: button(words).getAttribute('aria-pressed'),
         userSelect: getComputedStyle(area).userSelect,
       }).toEqual({ pressed: 'true', userSelect: 'none' })
     },
@@ -1545,7 +1549,7 @@ describe('Escape leaves the reader once nothing else takes it, with real keys (O
   it('leaves at one Escape from a bar control the mouse pressed, and takes the bars away first once Tab moves on from it', async () => {
     const onLeave = await counted()
     await tapPage()
-    await real(() => userEvent.click(button('single')))
+    await real(() => userEvent.click(button('One page')))
     const pressed = focused()
     await real(() => userEvent.keyboard('{Escape}'))
     const left = [barsUp(), onLeave.mock.calls.length]
@@ -1557,7 +1561,7 @@ describe('Escape leaves the reader once nothing else takes it, with real keys (O
       left,
       tabbed,
       [focused(), barsUp(), onLeave.mock.calls.length],
-    ]).toEqual(['single', [true, 1], 'two', ['page', false, 1]])
+    ]).toEqual(['One page', [true, 1], 'Two pages', ['page', false, 1]])
   })
 
   /**
