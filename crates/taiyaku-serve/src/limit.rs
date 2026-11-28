@@ -5,9 +5,11 @@
 //! caller bounds, and why its number is what it is, is said where that caller
 //! builds its own: `cover.rs`'s `GENERATION_LIMIT` is one.
 //!
-//! `download.rs` does not use this. Its handlers are `async fn`s with a
-//! runtime to await on, so it holds a `tokio::sync::Semaphore`. This one is
-//! for code already on the blocking pool, where waiting is a parked thread.
+//! `download.rs` and the password-verify permits (`session::VerifyLimit`)
+//! do not use this. Their callers are `async fn`s with a runtime to await
+//! on, so each holds a `tokio::sync::Semaphore`, and a waiter there holds no
+//! thread (O214). This one is for code already on the blocking pool, where
+//! waiting is a parked thread.
 
 use std::sync::{Condvar, Mutex};
 

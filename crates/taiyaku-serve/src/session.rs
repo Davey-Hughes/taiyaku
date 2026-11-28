@@ -61,8 +61,8 @@ pub struct AuthConfig {
 /// server makes a new one only when every one it has is in a permit holder's
 /// hands. So it never makes more of them than this, and it keeps the ones it
 /// has made. Without the permits every request of a burst would run in a
-/// buffer of its own. With them a request past the count waits its turn on a
-/// `spawn_blocking` thread, holding no memory.
+/// buffer of its own. With them a request past the count waits its turn as a
+/// future on the runtime, holding no memory and no thread (O214).
 ///
 /// The count is a decision and not a measurement. The memory it bounds does
 /// not depend on how fast the host is.
@@ -94,7 +94,9 @@ pub struct VerifyLimit(Arc<Verifies>);
 /// What every clone of one [`VerifyLimit`] shares.
 #[derive(Debug)]
 struct Verifies {
-    permits: crate::limit::Semaphore,
+    /// Awaited, not blocked on, and in an `Arc` so that a held permit is
+    /// `'static` and moves into the `spawn_blocking` task that verifies.
+    permits: Arc<tokio::sync::Semaphore>,
     /// The working memories no permit is holding.
     ///
     /// **A server never makes more of them than it has permits.** Only a
@@ -111,15 +113,20 @@ struct Verifies {
     /// How many working memories this has made.
     #[cfg(test)]
     made: std::sync::atomic::AtomicUsize,
+    /// How many requests are waiting for a permit now.
+    #[cfg(test)]
+    waiting: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for VerifyLimit {
     fn default() -> Self {
         Self(Arc::new(Verifies {
-            permits: crate::limit::Semaphore::new(MAX_CONCURRENT_VERIFIES),
+            permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_VERIFIES)),
             spare: Mutex::new(Vec::new()),
             #[cfg(test)]
             made: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            waiting: std::sync::atomic::AtomicUsize::new(0),
         }))
     }
 }
@@ -130,16 +137,26 @@ impl VerifyLimit {
     /// when none is spare, a new one that holds nothing until a verify runs
     /// in it.
     ///
-    /// **It blocks, so it is called on the blocking pool and never on a
-    /// runtime worker**, like the SQLite reads on either side of it.
+    /// **Awaited on the runtime and not on the blocking pool (O214)**, so a
+    /// request waiting here holds no thread that other requests need.
     ///
     /// **Take it before the library's connection, and never while holding
     /// the connection.** A verifying path holds its permit and then asks for
     /// the connection. Anything that held the connection and waited here
     /// would stop every one of them, and they it.
     #[must_use = "a permit that is not kept is given back at once"]
-    pub(crate) fn permit(&self) -> VerifyPermit<'_> {
-        let held = self.0.permits.acquire();
+    pub(crate) async fn permit(&self) -> VerifyPermit {
+        let held = {
+            #[cfg(test)]
+            let _waiting = Waiting::counted(&self.0.waiting);
+            Arc::clone(&self.0.permits).acquire_owned().await
+        };
+        let held = held.expect("the verify permits are never closed");
+        self.holding(held)
+    }
+
+    /// The permit `held` and a working memory to go with it.
+    fn holding(&self, held: tokio::sync::OwnedSemaphorePermit) -> VerifyPermit {
         // Asked for only now that the permit is held: `Verifies::spare` has
         // why that is what bounds how many are made.
         let spare = self
@@ -157,17 +174,39 @@ impl VerifyLimit {
         });
         VerifyPermit {
             memory,
-            spare: &self.0.spare,
+            verifies: Arc::clone(&self.0),
             _held: held,
         }
     }
 
     /// Every permit at once, so that the next verify waits until they drop.
+    /// A test takes them before it sends anything, so each is free.
     #[cfg(test)]
-    pub(crate) fn hold_all(&self) -> Vec<VerifyPermit<'_>> {
+    pub(crate) fn hold_all(&self) -> Vec<VerifyPermit> {
         (0..MAX_CONCURRENT_VERIFIES)
-            .map(|_| self.permit())
+            .map(|_| {
+                let held = Arc::clone(&self.0.permits)
+                    .try_acquire_owned()
+                    .expect("a test holds every permit before anything else takes one");
+                self.holding(held)
+            })
             .collect()
+    }
+
+    /// [`Self::permit`] for a test's own thread, which has no runtime to
+    /// await on.
+    #[cfg(test)]
+    pub(crate) fn permit_blocking(&self) -> VerifyPermit {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("builds a runtime to wait on")
+            .block_on(self.permit())
+    }
+
+    /// How many requests are waiting for a permit now.
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> usize {
+        self.0.waiting.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// How many working memories this server has made since it started.
@@ -194,23 +233,45 @@ impl VerifyLimit {
 /// One of a server's verify permits, and the working memory a verify under
 /// it runs in. Both are given back when it drops.
 #[derive(Debug)]
-pub(crate) struct VerifyPermit<'a> {
+pub(crate) struct VerifyPermit {
     memory: WorkingMemory,
-    spare: &'a Mutex<Vec<WorkingMemory>>,
-    _held: crate::limit::SemaphoreGuard<'a>,
+    verifies: Arc<Verifies>,
+    _held: tokio::sync::OwnedSemaphorePermit,
 }
 
-impl Drop for VerifyPermit<'_> {
+impl Drop for VerifyPermit {
     /// **The memory goes back before the permit does.** This runs before
     /// `_held` drops, so by the time anyone else can hold this permit its
     /// memory is spare again. In the other order the next holder could find
     /// nothing spare and make a memory the server already had.
     fn drop(&mut self) {
         let memory = std::mem::take(&mut self.memory);
-        self.spare
+        self.verifies
+            .spare
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(memory);
+    }
+}
+
+/// A request counted as waiting for a permit for as long as this lives, so
+/// that a wait given up, as when the client goes away, is counted out too.
+#[cfg(test)]
+#[derive(Debug)]
+struct Waiting<'a>(&'a std::sync::atomic::AtomicUsize);
+
+#[cfg(test)]
+impl<'a> Waiting<'a> {
+    fn counted(waiting: &'a std::sync::atomic::AtomicUsize) -> Self {
+        waiting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(waiting)
+    }
+}
+
+#[cfg(test)]
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -222,7 +283,7 @@ impl Drop for VerifyPermit<'_> {
 /// and takes it mutably because the permit's memory is what argon2 fills. A
 /// permit bound to `_` is given back before the next statement runs, and it
 /// has no name to pass here.
-pub(crate) fn verify_holding(permit: &mut VerifyPermit<'_>, password: &str, phc: &str) -> bool {
+pub(crate) fn verify_holding(permit: &mut VerifyPermit, password: &str, phc: &str) -> bool {
     taiyaku_library::credential::verify_password_in(&mut permit.memory, password, phc)
 }
 
@@ -484,6 +545,22 @@ fn refuse_cross_site(
     )
 }
 
+/// Whether this address, or this name from it, has spent its allowance of
+/// wrong passwords (§7). The login route and Basic ask it before a request
+/// waits for a permit and again once it holds one (`auth::from_basic`, then
+/// `auth::verify_basic`), both keys each time.
+///
+/// **Fails closed**: `unwrap_or(false)` would read a `SQLITE_BUSY` on the one
+/// shared connection as "not locked out", losing the limiter under exactly
+/// the load that triggers it.
+pub(crate) fn locked_out(state: &ServeState, wide: &str, key: &str) -> bool {
+    use taiyaku_library::account;
+
+    let conn = state.library.conn();
+    account::is_address_locked_out(&conn, wide).unwrap_or(true)
+        || account::is_locked_out(&conn, key).unwrap_or(true)
+}
+
 #[derive(serde::Deserialize)]
 pub(crate) struct LoginBody {
     name: String,
@@ -500,6 +577,8 @@ pub(crate) async fn login(
     headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<LoginBody>,
 ) -> Response {
+    use taiyaku_library::{account, credential};
+
     if let Some(refusal) = refuse_cross_site(&state.auth, &extensions, &headers, &Method::POST) {
         return refusal;
     }
@@ -510,128 +589,124 @@ pub(crate) async fn login(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
 
-    // `spawn_blocking` for the reasons the guard uses it: SQLite behind a
-    // mutex, an argon2 verify, and a wait for a permit before it (O57). A login
-    // that is not locked out pays all three.
-    let opened = tokio::task::spawn_blocking(move || {
-        use taiyaku_library::{account, credential};
+    // §7: keyed on the pair, so one misconfigured client locks out only
+    // itself. Checked before the account is even looked up, so a locked-out
+    // pair costs no argon2 — which is the other half of what a rate limit is
+    // for on a route whose work is deliberately expensive.
+    let key = account::attempt_key(&account::limiter_address(address), &body.name);
+    // **The wider key, checked first and before anything expensive.** The
+    // pair's name half is supplied by the caller, so a fresh invented name is
+    // a fresh counter and the decoy verify below is free to run — see
+    // `account::address_key`.
+    let wide = account::address_key(&account::limiter_address(address));
 
-        // §7: keyed on the pair, so one misconfigured client locks out only
-        // itself. Checked before the account is even looked up, so a locked-out
-        // pair costs no argon2 — which is the other half of what a rate limit
-        // is for on a route whose work is deliberately expensive.
-        let key = account::attempt_key(&account::limiter_address(address), &body.name);
-        // **The wider key, checked first and before anything expensive.** The
-        // pair's name half is supplied by the caller, so a fresh invented name
-        // is a fresh counter and the decoy verify below is free to run — see
-        // `account::address_key`.
-        let wide = account::address_key(&account::limiter_address(address));
-        // Asked twice below, so written once: both reads must ask both keys
-        // and fail the same way.
-        let locked_out = || {
-            let conn = state.library.conn();
-            // Fails closed: `unwrap_or(false)` would read a `SQLITE_BUSY` on
-            // the one shared connection as "not locked out", losing the limiter
-            // under exactly the load that triggers it.
-            account::is_address_locked_out(&conn, &wide).unwrap_or(true)
-                || account::is_locked_out(&conn, &key).unwrap_or(true)
+    // A pool task for the lockout read, the wait for a permit on the runtime,
+    // and a pool task holding the permit for the rest: SQLite behind a mutex
+    // and an argon2 verify are why the two are on the pool, as in the guard,
+    // and a wait there would hold a thread (O214).
+    let opened = async move {
+        let first = {
+            let (state, key, wide) = (Arc::clone(&state), key.clone(), wide.clone());
+            tokio::task::spawn_blocking(move || locked_out(&state, &wide, &key)).await?
         };
-        if locked_out() {
-            return Attempt::TooMany;
+        if first {
+            return Ok(Attempt::TooMany);
         }
         // **O57: a permit, and then the same question a second time.** The
         // read above is what refuses a caller already locked out: it costs
         // that caller neither a wait nor a verify. It cannot bound a burst,
         // because requests that arrive together all pass it before any of
-        // them has failed. So the lockout is read again here, by a request
-        // holding a permit it keeps until its own failure is recorded. The
-        // only requests between this read and that record are the ones
-        // holding a permit, so a burst costs the allowance it found and at
-        // most one more verify for each other permit.
-        let mut permit = state.auth.verifies.permit();
-        if locked_out() {
-            return Attempt::TooMany;
-        }
-
-        let found = {
-            let conn = state.library.conn();
-            account::by_name(&conn, &body.name).ok().flatten()
-        };
-        // A failure for an account that does not exist still counts, or the
-        // limiter would only slow down guesses at names it has confirmed — and
-        // it must cost the same, or response time enumerates the roster. See
-        // `credential::DECOY_HASH`, and `auth::from_basic` for the same split.
-        let Some((found, phc)) = found else {
-            let _ = verify_holding(&mut permit, &body.password, credential::DECOY_HASH);
-            let conn = state.library.conn();
-            // **Both, unconditionally.** `||` short-circuits, so a pair-key
-            // failure that errored would skip the wide key entirely — the one
-            // counter that bounds the cost, dropped on the path that most
-            // needs it. The decision is taken after both have been recorded.
-            let pair = account::note_failure(&conn, &key);
-            let address = account::note_failure(&conn, &wide);
-            if pair.is_err() || address.is_err() {
+        // them has failed. So the lockout is read again, by a request holding
+        // a permit it keeps until its own failure is recorded, and a burst
+        // costs the allowance it found and at most one more verify for each
+        // other permit.
+        let mut permit = state.auth.verifies.permit().await;
+        tokio::task::spawn_blocking(move || {
+            if locked_out(&state, &wide, &key) {
                 return Attempt::TooMany;
             }
-            return Attempt::No;
-        };
-        // Verified holding the permit and not the library's connection — see
-        // `auth::from_basic`.
-        if !verify_holding(&mut permit, &body.password, &phc) {
-            let conn = state.library.conn();
-            // An unrecordable failure is an unbounded one; the safe reading of
-            // "the limiter is not working" is to stop rather than to continue.
-            // **Both, unconditionally.** `||` short-circuits, so a pair-key
-            // failure that errored would skip the wide key entirely — the one
-            // counter that bounds the cost, dropped on the path that most
-            // needs it. The decision is taken after both have been recorded.
-            let pair = account::note_failure(&conn, &key);
-            let address = account::note_failure(&conn, &wide);
-            count_wrong_password(&conn, &found);
-            if pair.is_err() || address.is_err() {
-                return Attempt::TooMany;
-            }
-            return Attempt::No;
-        }
-        // The verify passed and there is no failure to record, so the next
-        // one may start.
-        drop(permit);
 
-        let token = credential::mint_token();
-        {
-            let conn = state.library.conn();
-            // **Not `Attempt::No`.** The password was right; the database
-            // refused the write — `serve` and `library import` share one file,
-            // so an INSERT can lose to a busy writer. Answering 401 makes every
-            // client say "that name and password did not match", which is
-            // actively false and leaves the reader retrying a correct password
-            // forever with nothing recorded anywhere. The two database failures
-            // above it in this same closure reason about this error class and
-            // answer 429.
-            if account::open_session(
-                &conn,
-                found.id,
-                &token,
-                user_agent.as_deref(),
-                Some(&address.to_string()),
-            )
-            .is_err()
+            let found = {
+                let conn = state.library.conn();
+                account::by_name(&conn, &body.name).ok().flatten()
+            };
+            // A failure for an account that does not exist still counts, or the
+            // limiter would only slow down guesses at names it has confirmed — and
+            // it must cost the same, or response time enumerates the roster. See
+            // `credential::DECOY_HASH`, and `auth::verify_basic` for the same split.
+            let Some((found, phc)) = found else {
+                let _ = verify_holding(&mut permit, &body.password, credential::DECOY_HASH);
+                let conn = state.library.conn();
+                // **Both, unconditionally.** `||` short-circuits, so a pair-key
+                // failure that errored would skip the wide key entirely — the one
+                // counter that bounds the cost, dropped on the path that most
+                // needs it. The decision is taken after both have been recorded.
+                let pair = account::note_failure(&conn, &key);
+                let address = account::note_failure(&conn, &wide);
+                if pair.is_err() || address.is_err() {
+                    return Attempt::TooMany;
+                }
+                return Attempt::No;
+            };
+            // Verified holding the permit and not the library's connection — see
+            // `auth::from_basic`.
+            if !verify_holding(&mut permit, &body.password, &phc) {
+                let conn = state.library.conn();
+                // An unrecordable failure is an unbounded one; the safe reading of
+                // "the limiter is not working" is to stop rather than to continue.
+                // **Both, unconditionally.** `||` short-circuits, so a pair-key
+                // failure that errored would skip the wide key entirely — the one
+                // counter that bounds the cost, dropped on the path that most
+                // needs it. The decision is taken after both have been recorded.
+                let pair = account::note_failure(&conn, &key);
+                let address = account::note_failure(&conn, &wide);
+                count_wrong_password(&conn, &found);
+                if pair.is_err() || address.is_err() {
+                    return Attempt::TooMany;
+                }
+                return Attempt::No;
+            }
+            // The verify passed and there is no failure to record, so the next
+            // one may start.
+            drop(permit);
+
+            let token = credential::mint_token();
             {
-                return Attempt::Failed;
+                let conn = state.library.conn();
+                // **Not `Attempt::No`.** The password was right; the database
+                // refused the write — `serve` and `library import` share one file,
+                // so an INSERT can lose to a busy writer. Answering 401 makes every
+                // client say "that name and password did not match", which is
+                // actively false and leaves the reader retrying a correct password
+                // forever with nothing recorded anywhere. The two database failures
+                // above it in this same closure reason about this error class and
+                // answer 429.
+                if account::open_session(
+                    &conn,
+                    found.id,
+                    &token,
+                    user_agent.as_deref(),
+                    Some(&address.to_string()),
+                )
+                .is_err()
+                {
+                    return Attempt::Failed;
+                }
+                // Getting it right forgets the mistakes before it, so two typos and
+                // then the right password leave nothing to accumulate against the
+                // next slip.
+                //
+                // **The pair only, deliberately.** Clearing the address key too
+                // would let one correct login wipe out every other name's failures
+                // from the same address — on a shared NAT, an innocent reader
+                // signing in would reset a guesser's budget. The wide counter is a
+                // cost ceiling rather than a lockout, and it lapses with its window.
+                let _ = account::clear_failures(&conn, &key);
             }
-            // Getting it right forgets the mistakes before it, so two typos and
-            // then the right password leave nothing to accumulate against the
-            // next slip.
-            //
-            // **The pair only, deliberately.** Clearing the address key too
-            // would let one correct login wipe out every other name's failures
-            // from the same address — on a shared NAT, an innocent reader
-            // signing in would reset a guesser's budget. The wide counter is a
-            // cost ceiling rather than a lockout, and it lapses with its window.
-            let _ = account::clear_failures(&conn, &key);
-        }
-        Attempt::Yes(token)
-    })
+            Attempt::Yes(token)
+        })
+        .await
+    }
     .await;
 
     match opened {
@@ -1084,6 +1159,13 @@ enum Outcome {
     TooMany,
 }
 
+/// Whether this account has spent its guesses at its own password from this
+/// address. Fails closed, as [`locked_out`] does.
+fn change_locked_out(state: &ServeState, key: &str) -> bool {
+    let conn = state.library.conn();
+    taiyaku_library::account::is_locked_out(&conn, key).unwrap_or(true)
+}
+
 #[derive(serde::Deserialize)]
 pub(crate) struct PasswordChange {
     current: String,
@@ -1126,73 +1208,77 @@ pub(crate) async fn change_password(
     let address = crate::auth::client_of(&state.auth, &extensions, &headers);
     let token = token_of(&headers);
 
-    let changed = tokio::task::spawn_blocking(move || {
-        use taiyaku_library::account;
+    // **§7 applies here too**: this verifies the current password with
+    // argon2, and without counting the failures it would allow unlimited
+    // guesses at the one secret standing between a borrowed session and
+    // permanent account takeover, which is the exact scenario this route's
+    // own doc says the current-password requirement exists for.
+    // **Keyed on the account as well as the address.** A bare
+    // `"  change-password"` would make one counter for every reader behind
+    // one address: a household where somebody mistyped their old password
+    // ten times would lock everyone at that address out of changing theirs,
+    // and a guesser working on one account would spend a budget the others
+    // need. The leading spaces are the sentinel that keeps this out of
+    // `by_name`'s namespace — a name reaching `attempt_key` from the login
+    // route comes from a JSON body or a Basic header, either of which
+    // could carry this string, so it is a separation of concerns rather
+    // than a guarantee.
+    let key = taiyaku_library::account::attempt_key(
+        &taiyaku_library::account::limiter_address(address),
+        &format!("  change-password {user_id}"),
+    );
 
-        // **§7 applies here too**: this verifies the current password with
-        // argon2, and without counting the failures it would allow unlimited
-        // guesses at the one secret standing between a borrowed session and
-        // permanent account takeover, which is the exact scenario this route's
-        // own doc says the current-password requirement exists for.
-        // **Keyed on the account as well as the address.** A bare
-        // `"  change-password"` would make one counter for every reader behind
-        // one address: a household where somebody mistyped their old password
-        // ten times would lock everyone at that address out of changing theirs,
-        // and a guesser working on one account would spend a budget the others
-        // need. The leading spaces are the sentinel that keeps this out of
-        // `by_name`'s namespace — a name reaching `attempt_key` from the login
-        // route comes from a JSON body or a Basic header, either of which
-        // could carry this string, so it is a separation of concerns rather
-        // than a guarantee.
-        let key = account::attempt_key(
-            &account::limiter_address(address),
-            &format!("  change-password {user_id}"),
-        );
-        // Asked twice below, so written once.
-        let locked_out = || {
-            let conn = state.library.conn();
-            account::is_locked_out(&conn, &key).unwrap_or(true)
+    // The same three steps as `login`, so the wait holds no thread (O214).
+    let changed = async move {
+        let first = {
+            let (state, key) = (Arc::clone(&state), key.clone());
+            tokio::task::spawn_blocking(move || change_locked_out(&state, &key)).await?
         };
-        if locked_out() {
-            return Some(Outcome::TooMany);
+        if first {
+            return Ok(Some(Outcome::TooMany));
         }
         // O57: a permit, and the same question again under it, the permit
         // kept until a failure is recorded. `login` has the reasoning. This
         // route is behind the guard, so its burst is one account's.
-        let mut permit = state.auth.verifies.permit();
-        if locked_out() {
-            return Some(Outcome::TooMany);
-        }
+        let mut permit = state.auth.verifies.permit().await;
+        tokio::task::spawn_blocking(move || {
+            use taiyaku_library::account;
 
-        let phc = {
-            let conn = state.library.conn();
-            let name: String = conn
-                .query_row("SELECT name FROM user WHERE id = ?1", [user_id], |row| {
-                    row.get(0)
-                })
-                .ok()?;
-            account::by_name(&conn, &name).ok()??.1
-        };
-        // Verified holding the permit and not the connection.
-        if !verify_holding(&mut permit, &body.current, &phc) {
-            let conn = state.library.conn();
-            if account::note_failure(&conn, &key).is_err() {
+            if change_locked_out(&state, &key) {
                 return Some(Outcome::TooMany);
             }
-            return Some(Outcome::Wrong);
-        }
-        // Given back before the new password is hashed. `set_password` hashes
-        // while it holds the connection, as every route that sets a password
-        // does, and none of them holds a permit.
-        drop(permit);
-        let conn = state.library.conn();
-        // `token` is kept, so a reader is not signed out of the browser they
-        // changed it from. Every other session ends (§4).
-        account::set_password(&conn, user_id, &body.next, token.as_deref()).ok()?;
-        // Getting it right forgets the guesses before it.
-        let _ = account::clear_failures(&conn, &key);
-        Some(Outcome::Changed)
-    })
+
+            let phc = {
+                let conn = state.library.conn();
+                let name: String = conn
+                    .query_row("SELECT name FROM user WHERE id = ?1", [user_id], |row| {
+                        row.get(0)
+                    })
+                    .ok()?;
+                account::by_name(&conn, &name).ok()??.1
+            };
+            // Verified holding the permit and not the connection.
+            if !verify_holding(&mut permit, &body.current, &phc) {
+                let conn = state.library.conn();
+                if account::note_failure(&conn, &key).is_err() {
+                    return Some(Outcome::TooMany);
+                }
+                return Some(Outcome::Wrong);
+            }
+            // Given back before the new password is hashed. `set_password` hashes
+            // while it holds the connection, as every route that sets a password
+            // does, and none of them holds a permit.
+            drop(permit);
+            let conn = state.library.conn();
+            // `token` is kept, so a reader is not signed out of the browser they
+            // changed it from. Every other session ends (§4).
+            account::set_password(&conn, user_id, &body.next, token.as_deref()).ok()?;
+            // Getting it right forgets the guesses before it.
+            let _ = account::clear_failures(&conn, &key);
+            Some(Outcome::Changed)
+        })
+        .await
+    }
     .await;
 
     match changed {

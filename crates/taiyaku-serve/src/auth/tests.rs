@@ -3548,7 +3548,7 @@ fn a_principal_holds_every_dir_of_a_granted_library() {
         crate::test_support::FIXTURE_PASSWORD,
     );
     let super::Resolved::Yes(by_password, super::By::Password) =
-        super::from_basic(&state, &password, client)
+        super::from_basic_verified(&state, &password, client)
     else {
         panic!("the fixture's password resolves to its account");
     };

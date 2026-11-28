@@ -305,6 +305,41 @@ fn larger() -> argon2::Params {
     argon2::Params::new(M_COST_KIB + 1024, 1, 1, None).expect("the parameters are in range")
 }
 
+/// A memory cost below this module's, at one pass.
+fn smaller() -> argon2::Params {
+    argon2::Params::new(M_COST_KIB - 1024, 1, 1, None).expect("the parameters are in range")
+}
+
+/// A small memory cost at as many passes as this module's cost allows: its
+/// memory times its passes, exactly.
+fn the_most_work() -> argon2::Params {
+    let t = M_COST_KIB * T_COST / 64;
+    assert_eq!(
+        64 * t,
+        M_COST_KIB * T_COST,
+        "the cost is not a whole number of passes"
+    );
+    argon2::Params::new(64, t, 1, None).expect("the parameters are in range")
+}
+
+/// One pass more than [`the_most_work`]: more work than this module's cost, in
+/// less memory.
+fn longer() -> argon2::Params {
+    argon2::Params::new(64, the_most_work().t_cost() + 1, 1, None)
+        .expect("the parameters are in range")
+}
+
+/// One lane more than this module's, at a small memory cost and two passes.
+fn wider() -> argon2::Params {
+    in_lanes(P_COST + 1)
+}
+
+/// Two passes in `lanes`, at the least memory `argon2` allows that many lanes
+/// or at 64 KiB, whichever is more.
+fn in_lanes(lanes: u32) -> argon2::Params {
+    small((8 * lanes).max(64), 2, lanes, None)
+}
+
 /// Where each part of a PHC string that carries all of them sits when it is
 /// split at its `$`s. The string starts with one, so the first field is empty.
 const ALGORITHM_FIELD: usize = 1;
@@ -372,7 +407,7 @@ fn refused(cases: &mut Vec<Case>, what: &'static str, password: &'static str, ph
 }
 
 /// **`verify_password_in` answers what `argon2`'s own verifier answers, for
-/// every stored string and every password.**
+/// every stored string within this module's cost and every password.**
 ///
 /// `verify_password_in` is `argon2`'s own verifier written out again around a
 /// memory the caller keeps, so it is right exactly as far as it agrees with
@@ -380,18 +415,18 @@ fn refused(cases: &mut Vec<Case>, what: &'static str, password: &'static str, ph
 /// written down here as well: two verifiers that both refused a hash this
 /// table had built wrongly would agree and prove nothing.
 ///
-/// **A stored hash is verified at its own cost, not this module's.** This
+/// **A stored hash is verified at its own cost, up to this module's.** This
 /// module's parameters may be raised, and a hash made before that still has
 /// to verify. So the table holds hashes this module could not have made: other
-/// memory and time costs, the two other algorithms, the older version and no
-/// version at all, more lanes, other output and salt lengths, and a memory
-/// cost above this module's, which the memory has to grow for.
+/// memory and time costs, the two other algorithms, the older version and none,
+/// a key id and associated data, and other output and salt lengths. A costlier
+/// hash is refused, as the tests below hold (O217).
 ///
 /// **One memory runs the whole table, and before each case it is filled with
 /// words that are not zero.** A kept memory is zeroed after every run, so in
 /// use a run finds what `argon2`'s own verifier would have allocated for it.
-/// The answer must not rest on that. The memory is grown to this module's
-/// cost before the first case, so that the first has something to be filled
+/// The answer must not rest on that. The memory is grown to a small cost
+/// before the first case, so that the first has something to be filled
 /// like the rest. Each case is then put to a memory as it would be had a run
 /// been left in it, and `argon2`'s own verifier is put the same case with a
 /// new one. A case that reaches `argon2` runs in that memory, in the front of
@@ -526,13 +561,6 @@ fn the_two_verifiers_agree() {
             A_SALT,
         ),
         (
-            "two lanes",
-            Algorithm::Argon2id,
-            Version::V0x13,
-            small(64, 2, 2, None),
-            A_SALT,
-        ),
-        (
             "a shorter output",
             Algorithm::Argon2id,
             Version::V0x13,
@@ -574,13 +602,6 @@ fn the_two_verifiers_agree() {
                 .expect("the parameters are in range"),
             A_SALT,
         ),
-        (
-            "a larger m",
-            Algorithm::Argon2id,
-            Version::V0x13,
-            larger(),
-            A_SALT,
-        ),
     ];
     for (what, algorithm, version, params, salt) in others {
         made_from_right(
@@ -591,7 +612,7 @@ fn the_two_verifiers_agree() {
     }
 
     let mut memory = WorkingMemory::new();
-    drop(memory.blocks_for(hasher().params()));
+    drop(memory.blocks_for(&small(64, 2, 1, None)));
     for case in &cases {
         let Case {
             what,
@@ -619,21 +640,257 @@ fn the_two_verifiers_agree() {
     }
     assert_eq!(
         memory.block_count(),
-        larger().block_count(),
+        hasher().params().block_count(),
         "the costliest case did not grow this memory, so the cases were not answered \
          in it"
     );
 }
 
+/// A PHC string for [`RIGHT`] made by `argon2` at `params`, in argon2id at
+/// the current version.
+fn hashed_at(params: argon2::Params) -> String {
+    hashed_by_argon2(
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        params,
+        A_SALT,
+        RIGHT,
+    )
+}
+
+/// **A stored hash that asks for more memory than this module's is refused,
+/// and grows nothing (O217).**
+///
+/// `argon2`'s own verifier accepts it, so this is where the two verifiers
+/// part, on purpose: a run at that cost would grow a kept memory for as long
+/// as the process lasts. Here the memory already holds what a run at this
+/// module's cost needs, and it holds no more after the refusal.
+#[test]
+fn a_stored_hash_over_this_modules_memory_cost_is_refused() {
+    let costlier = hashed_at(larger());
+    assert!(
+        argon2s_own_verifier(RIGHT, &costlier),
+        "argon2 does not verify the costlier hash, so refusing it shows nothing"
+    );
+
+    let needed = hasher().params().block_count();
+    let mut memory = WorkingMemory::new();
+    drop(memory.blocks_for(hasher().params()));
+    assert!(
+        !verify_password_in(&mut memory, RIGHT, &costlier),
+        "a hash that needs more memory than this module's was verified"
+    );
+    assert_eq!(
+        (memory.block_count(), memory.capacity(), memory.grown()),
+        (needed, needed, 1),
+        "refusing a costlier hash grew a memory that held this module's cost"
+    );
+}
+
+/// **A stored hash that asks for more work than this module's is refused, and
+/// one that asks for as much is not (O217).**
+///
+/// Work is memory times passes, so a hash at a small memory cost may take
+/// many passes, and one pass more than this module's work is refused.
+#[test]
+fn a_stored_hash_over_this_modules_work_is_refused() {
+    let longest = hashed_at(longer());
+    assert!(
+        argon2s_own_verifier(RIGHT, &longest),
+        "argon2 does not verify the longer hash, so refusing it shows nothing"
+    );
+    assert!(
+        !verifies(RIGHT, &longest),
+        "a hash that asks for more work than this module's was verified"
+    );
+    assert!(
+        verifies(RIGHT, &hashed_at(the_most_work())),
+        "a hash that asks for as much work as this module's, in less memory, was \
+         refused"
+    );
+}
+
+/// **A stored hash in more lanes than this module's is refused, and one in as
+/// many is not (O217).**
+///
+/// A lane adds no memory but some work of its own, so a hash within this
+/// module's memory and work can still take longer than this module's verify
+/// (`docs/notes.md`, O217).
+#[test]
+fn a_stored_hash_in_more_lanes_than_this_modules_is_refused() {
+    let wider = hashed_at(wider());
+    assert!(
+        argon2s_own_verifier(RIGHT, &wider),
+        "argon2 does not verify the hash in more lanes, so refusing it shows nothing"
+    );
+    assert!(
+        !verifies(RIGHT, &wider),
+        "a hash in more lanes than this module's was verified"
+    );
+    assert!(
+        verifies(RIGHT, &hashed_at(in_lanes(P_COST))),
+        "a hash in as many lanes as this module's, at a small cost, was refused"
+    );
+}
+
+/// **A refused hash costs what a wrong password does (O217).** It is refused
+/// after a verify against [`DECOY_HASH`], whose cost is this module's, so a
+/// new memory is grown to that cost by the refusal and left zeroed.
+#[test]
+fn a_hash_over_this_modules_cost_is_refused_after_the_decoys_run() {
+    let decoy = argon2::password_hash::PasswordHash::new(DECOY_HASH).expect("the decoy parses");
+    assert!(
+        !over_this_modules_cost(&decoy),
+        "the decoy costs more than this module's cost, so a refusal costs more than a \
+         wrong password"
+    );
+    for (what, params) in [
+        ("over this module's memory cost", larger()),
+        ("over this module's work", longer()),
+        ("in more lanes than this module's", wider()),
+    ] {
+        let mut memory = WorkingMemory::new();
+        assert!(!verify_password_in(&mut memory, RIGHT, &hashed_at(params)));
+        assert_eq!(
+            (memory.block_count(), memory.grown()),
+            (hasher().params().block_count(), 1),
+            "a hash {what} was refused without the decoy's run"
+        );
+        assert!(
+            memory.is_all_zero(),
+            "the decoy's run left something of itself in the memory"
+        );
+    }
+}
+
+/// **A stored hash that parses but whose parameters `argon2` itself rejects,
+/// or that names `p` twice, is refused after the decoy's run too, and none
+/// panics (O217).** This module's own hash edited, since `argon2` makes none
+/// of them: lanes enough to overflow its check of the memory, more than it
+/// takes, two in too little memory, more memory than a `u32` counts, each
+/// answered at once without the decoy; and `p` named twice, one first, where
+/// `argon2` reads the last: 2^29, and two lanes in a hash it made, which it
+/// verifies. A case that panics reads `None`.
+#[test]
+fn a_hash_whose_parameters_argon2_rejects_is_refused_after_the_decoys_run() {
+    let ours = hash_password(RIGHT).expect("hashes");
+    let in_two_lanes = hashed_at(wider());
+    let edited = |phc: &str, edits: &[(&str, &str)]| {
+        edits.iter().fold(phc.to_string(), |phc, (from, to)| {
+            assert_eq!(phc.matches(from).count(), 1, "{from} is not in {phc} once");
+            phc.replacen(from, to, 1)
+        })
+    };
+    let cases = [
+        (
+            "in 2^29 lanes",
+            edited(&ours, &[(",p=1$", ",p=536870912$")]),
+        ),
+        ("in 2^24 lanes", edited(&ours, &[(",p=1$", ",p=16777216$")])),
+        (
+            "in two lanes of 8 KiB",
+            edited(&ours, &[("$m=19456,", "$m=8,"), (",p=1$", ",p=2$")]),
+        ),
+        (
+            "at 2^32 KiB",
+            edited(&ours, &[("$m=19456,", "$m=4294967296,")]),
+        ),
+        (
+            "in 2^29 lanes after a first p of one",
+            edited(&ours, &[(",p=1$", ",p=1,p=536870912$")]),
+        ),
+        (
+            "in two lanes after a first p of one",
+            edited(&in_two_lanes, &[(",p=2$", ",p=1,p=2$")]),
+        ),
+    ];
+
+    let told: Vec<_> = cases
+        .iter()
+        .map(|(what, phc)| {
+            let mut memory = WorkingMemory::new();
+            let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                verify_password_in(&mut memory, RIGHT, phc)
+            }));
+            (
+                *what,
+                answer.ok(),
+                memory.block_count(),
+                memory.grown(),
+                memory.is_all_zero(),
+            )
+        })
+        .collect();
+    let refused_after_the_decoy: Vec<_> = cases
+        .iter()
+        .map(|(what, _)| (*what, Some(false), hasher().params().block_count(), 1, true))
+        .collect();
+    assert_eq!(
+        told, refused_after_the_decoy,
+        "a hash argon2 rejects was not refused after the decoy's run, or panicked"
+    );
+}
+
+/// **A stored hash that parses but that `argon2` will not run is refused
+/// after the decoy's run too (O217).** A hash at 64 KiB with no output, with
+/// neither a salt nor an output, in an algorithm or at a version `argon2`
+/// does not have, or with a salt that is not base64 or is too short for it.
+/// Refused without the decoy, each would answer at once; that the memory
+/// grew to the decoy's size, and no further, is what shows the decoy ran.
+#[test]
+fn a_hash_argon2_will_not_run_is_refused_after_the_decoys_run() {
+    let cheap = hashed_at(small(64, 2, 1, None));
+    let cases = [
+        ("with no output", without_field(&cheap, OUTPUT_FIELD)),
+        (
+            "with neither a salt nor an output",
+            without_field(&without_field(&cheap, OUTPUT_FIELD), SALT_FIELD),
+        ),
+        (
+            "in an algorithm argon2 is not",
+            with_field(&cheap, ALGORITHM_FIELD, "argon2q"),
+        ),
+        (
+            "at a version argon2 never had",
+            with_field(&cheap, VERSION_FIELD, "v=20"),
+        ),
+        (
+            "with a salt that is not base64",
+            with_field(&cheap, SALT_FIELD, "not.base64"),
+        ),
+        (
+            "with a salt too short for argon2",
+            with_field(&cheap, SALT_FIELD, "somesalt"),
+        ),
+    ];
+
+    let told: Vec<_> = cases
+        .iter()
+        .map(|(what, phc)| {
+            let mut memory = WorkingMemory::new();
+            let answer = verify_password_in(&mut memory, RIGHT, phc);
+            (*what, answer, memory.block_count(), memory.is_all_zero())
+        })
+        .collect();
+    let refused_after_the_decoy: Vec<_> = cases
+        .iter()
+        .map(|(what, _)| (*what, false, hasher().params().block_count(), true))
+        .collect();
+    assert_eq!(
+        told, refused_after_the_decoy,
+        "a hash argon2 will not run was refused without the decoy's run"
+    );
+}
+
 /// **A working memory is filled again and not made again.**
 ///
-/// It holds nothing until a run needs it, and grows to what that run needs. A
-/// later run at the same cost does not grow it, and is handed the blocks it
-/// was already holding and not new ones. A stored hash at a higher memory cost
-/// grows it once more, to what that hash needs and no further, and it stays
-/// grown: the next verify at this module's cost runs in the front of the
-/// bigger memory without growing it, answers right for the right password and
-/// for a wrong one, and leaves all of it zeroed.
+/// It holds nothing until a run needs it, and grows to what that run needs,
+/// first a cheaper hash's. A later run at the same cost does not grow it, and
+/// is handed the blocks it was already holding and not new ones. A hash at
+/// this module's cost grows it once more, to what that hash needs and no
+/// further, and it stays grown: the next verify at the cheaper cost runs in
+/// the front of the bigger memory without growing it, answers right for the
+/// right password and for a wrong one, and leaves all of it zeroed.
 ///
 /// **Its size cannot show that it was not made again**, since a memory freed
 /// and allocated afresh for every run is the same size each time. So the
@@ -643,8 +900,14 @@ fn the_two_verifiers_agree() {
 /// blocks the next run would get are read before it starts.
 #[test]
 fn a_working_memory_grows_to_what_a_run_needs_and_is_used_again() {
-    let needed = hasher().params().block_count();
-    let phc = hash_password(RIGHT).expect("hashes");
+    let first = smaller().block_count();
+    let cheaper = hashed_by_argon2(
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        smaller(),
+        A_SALT,
+        RIGHT,
+    );
 
     let mut memory = WorkingMemory::new();
     assert_eq!(
@@ -654,22 +917,22 @@ fn a_working_memory_grows_to_what_a_run_needs_and_is_used_again() {
     );
     assert_eq!(WorkingMemory::default().block_count(), 0);
 
-    assert!(verify_password_in(&mut memory, RIGHT, &phc));
+    assert!(verify_password_in(&mut memory, RIGHT, &cheaper));
     assert_eq!(
         memory.block_count(),
-        needed,
-        "a verify did not leave its memory holding what one run at this module's \
+        first,
+        "a verify did not leave its memory holding what one run at the stored hash's \
          cost needs"
     );
     assert_eq!(
         memory.capacity(),
-        needed,
+        first,
         "a new memory took room for more blocks than its first run needs"
     );
-    assert!(!verify_password_in(&mut memory, WRONG, &phc));
+    assert!(!verify_password_in(&mut memory, WRONG, &cheaper));
     assert_eq!(
         memory.block_count(),
-        needed,
+        first,
         "a second verify at the same cost changed how much the memory holds"
     );
     assert_eq!(
@@ -680,7 +943,7 @@ fn a_working_memory_grows_to_what_a_run_needs_and_is_used_again() {
     memory.scribble();
     assert!(
         memory
-            .blocks_for(hasher().params())
+            .blocks_for(&smaller())
             .0
             .iter()
             .all(|block| block.as_ref().iter().all(|word| *word != 0)),
@@ -688,30 +951,24 @@ fn a_working_memory_grows_to_what_a_run_needs_and_is_used_again() {
          was holding"
     );
 
-    let bigger = larger().block_count();
-    assert!(bigger > needed, "the larger cost is not larger");
-    let costlier = hashed_by_argon2(
-        argon2::Algorithm::Argon2id,
-        argon2::Version::V0x13,
-        larger(),
-        A_SALT,
-        RIGHT,
-    );
+    let needed = hasher().params().block_count();
+    assert!(needed > first, "this module's cost is not the larger");
+    let phc = hash_password(RIGHT).expect("hashes");
     assert!(
-        verify_password_in(&mut memory, RIGHT, &costlier),
-        "a hash that needs more memory than this module's was refused"
+        verify_password_in(&mut memory, RIGHT, &phc),
+        "a hash at this module's cost was refused in a memory a cheaper run had used"
     );
     assert_eq!(
         memory.block_count(),
-        bigger,
-        "the memory did not grow to what the costlier hash needs"
+        needed,
+        "the memory did not grow to what a hash at this module's cost needs"
     );
     // Room for what it holds and no more. This is the growth that could have
     // gone past: a `Vec` left to grow by itself takes at least twice what it
     // had, and here that is nearly a second run's memory held for nothing.
     assert_eq!(
         memory.capacity(),
-        bigger,
+        needed,
         "a memory that grew for a costlier hash took room for more blocks than the \
          hash needs"
     );
@@ -722,16 +979,16 @@ fn a_working_memory_grows_to_what_a_run_needs_and_is_used_again() {
     );
 
     assert!(
-        verify_password_in(&mut memory, RIGHT, &phc),
+        verify_password_in(&mut memory, RIGHT, &cheaper),
         "the right password was refused in a memory a bigger run had used"
     );
     assert!(
-        !verify_password_in(&mut memory, WRONG, &phc),
+        !verify_password_in(&mut memory, WRONG, &cheaper),
         "a wrong password was accepted in a memory a bigger run had used"
     );
     assert_eq!(
         memory.block_count(),
-        bigger,
+        needed,
         "the memory did not stay the size the costlier hash grew it to"
     );
     assert_eq!(
@@ -744,15 +1001,15 @@ fn a_working_memory_grows_to_what_a_run_needs_and_is_used_again() {
         "a run in the front of a bigger memory left something of itself there"
     );
 
-    // And from the bigger memory a run at this module's cost is handed the
+    // And from the bigger memory a run at the cheaper cost is handed the
     // blocks it needs and no more, which is what `argon2` would have allocated
     // for it. `argon2` takes the same blocks out of a longer slice today, so
     // nothing above can tell the two apart; this is what would.
     assert_eq!(
-        memory.blocks_for(hasher().params()).0.len(),
-        needed,
-        "a run at this module's cost was not handed exactly the blocks it needs from \
-         a memory that holds more"
+        memory.blocks_for(&smaller()).0.len(),
+        first,
+        "a run at the cheaper cost was not handed exactly the blocks it needs from a \
+         memory that holds more"
     );
 }
 

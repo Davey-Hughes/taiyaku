@@ -68,6 +68,7 @@ pub const DECOY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$3jVJ8kQnW2mXcR7LtYb
 /// lowered silently; the measurement on the deployment host is what makes them
 /// final. A parameter set that is fast on a workstation and slow on the server
 /// is the failure this project's measurement discipline exists to catch.
+/// Lowering m or t refuses stored hashes over the new cost: [`over_this_modules_cost`].
 const M_COST_KIB: u32 = 19_456;
 const T_COST: u32 = 2;
 const P_COST: u32 = 1;
@@ -121,9 +122,9 @@ fn hasher() -> argon2::Argon2<'static> {
 /// run ends, whether it answered, was refused or panicked. A memory that is
 /// not in a run is all zeros, however long it is kept.
 ///
-/// **It grows and never shrinks.** A new one holds nothing. It grows to what
-/// its first run needs, and again only for a stored hash that needs more
-/// memory than any it has run.
+/// **It grows and never shrinks.** A new one holds nothing, and it grows to
+/// what a run needs when it holds less, never past this module's own memory
+/// cost: a stored hash that asks for more is refused before it runs (O217).
 ///
 /// The blocks are `argon2`'s and stay inside this module: nothing a caller
 /// can reach names their type. `Debug` prints how many are held and none of
@@ -496,9 +497,9 @@ fn hash_with_salt(memories: &KeptMemories, password: &str, salt: &[u8]) -> Resul
 /// both, and they answer the same, `true` only for the password the hash was
 /// made from.
 ///
-/// **The cost is the stored hash's, not this module's.** A hash made at other
-/// parameters than the ones above is verified at its own, and `memory` grows
-/// for one that needs more.
+/// **The cost is the stored hash's, up to this module's.** A parsed hash over
+/// it, or one [`verified_in`] cannot run, is refused after the decoy's verify,
+/// so a refusal takes a wrong password's time (O217); `memory` grows for others.
 ///
 /// **`memory` comes back holding nothing of the verify.** The blocks the run
 /// used are zeroed before this returns, whatever it answers.
@@ -509,7 +510,38 @@ pub fn verify_password_in(memory: &mut WorkingMemory, password: &str, phc: &str)
     let Ok(parsed) = PasswordHash::new(phc) else {
         return false;
     };
-    verified_in(memory, password.as_bytes(), &parsed).is_ok()
+    if !over_this_modules_cost(&parsed)
+        && let Ok(same) = verified_in(memory, password.as_bytes(), &parsed)
+    {
+        return same;
+    }
+    if let Ok(decoy) = PasswordHash::new(DECOY_HASH) {
+        let _ = verified_in(memory, password.as_bytes(), &decoy);
+    }
+    false
+}
+
+/// Whether a stored hash asks for more than this module's own cost: more
+/// memory than [`M_COST_KIB`], more work (memory times passes) than
+/// `M_COST_KIB` times [`T_COST`], or more lanes, each adding work, than
+/// [`P_COST`] (O217, `docs/notes.md`). Parameters `argon2` cannot read count
+/// as more, so that such a hash too is refused after the decoy.
+///
+/// **No hash this module writes costs more**, so this refuses none of them.
+/// Lowering a constant above would refuse those made at the old cost, so
+/// rehash-on-login has to come first.
+fn over_this_modules_cost(hash: &argon2::password_hash::PasswordHash<'_>) -> bool {
+    // Every `p` off the string: `argon2` reads the last of a name given twice,
+    // and `Params` multiplies the lanes by 8 in a `u32`, which overflows from
+    // 2^29, and refuses those past its own cap.
+    hash.params
+        .iter()
+        .any(|(name, value)| name.as_str() == "p" && value.decimal().map_or(true, |p| p > P_COST))
+        || argon2::Params::try_from(hash).map_or(true, |params| {
+            params.m_cost() > M_COST_KIB
+                || u64::from(params.m_cost()) * u64::from(params.t_cost())
+                    > u64::from(M_COST_KIB) * u64::from(T_COST)
+        })
 }
 
 /// What `PasswordVerifier::verify_password` does for `argon2`, over
@@ -520,31 +552,26 @@ pub fn verify_password_in(memory: &mut WorkingMemory, password: &str, phc: &str)
 /// crate's default where the hash names none, and the salt is the stored
 /// hash's. The password is hashed again from those to an output as long as
 /// the stored one, and the two outputs are compared by `Output`'s own `==`,
-/// which takes the same time wherever they differ. A hash with no salt or no
-/// output verifies nothing.
+/// which takes the same time wherever they differ. An error is a hash that
+/// did not run: no salt or no output, or what `argon2` will not take.
 fn verified_in(
     memory: &mut WorkingMemory,
     password: &[u8],
     hash: &argon2::password_hash::PasswordHash<'_>,
-) -> argon2::password_hash::Result<()> {
-    if let (Some(salt), Some(expected)) = (&hash.salt, &hash.hash) {
-        let params = argon2::Params::try_from(hash)?;
-        let algorithm = argon2::Algorithm::try_from(hash.algorithm)?;
-        let version = hash
-            .version
-            .map(argon2::Version::try_from)
-            .transpose()?
-            .unwrap_or_default();
-        let computed = hash_in(memory, algorithm, version, params, password, *salt)?;
+) -> argon2::password_hash::Result<bool> {
+    let (Some(salt), Some(expected)) = (&hash.salt, &hash.hash) else {
+        return Err(argon2::password_hash::Error::PhcStringField);
+    };
+    let params = argon2::Params::try_from(hash)?;
+    let algorithm = argon2::Algorithm::try_from(hash.algorithm)?;
+    let version = hash
+        .version
+        .map(argon2::Version::try_from)
+        .transpose()?
+        .unwrap_or_default();
+    let computed = hash_in(memory, algorithm, version, params, password, *salt)?;
 
-        if let Some(computed) = &computed.hash
-            && expected == computed
-        {
-            return Ok(());
-        }
-    }
-
-    Err(argon2::password_hash::Error::Password)
+    Ok(computed.hash.as_ref() == Some(expected))
 }
 
 /// 32 bytes from the CSPRNG, base64url without padding — 43 characters.

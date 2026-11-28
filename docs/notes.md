@@ -33865,3 +33865,169 @@ as it was. The fingerprint pass's writes were checked by reading, not by a
 run: `scan_entry`'s digests and the prints, neither among the tables the
 structure version's triggers watch (`014_structure_version.sql`), which are
 those a work is projected from.
+
+## O214 and O217: the verify permits' wait and a stored hash's cost (2026-11-27)
+
+The rows in `docs/status.md` say what changed. The owner ruled on O217 that
+day: a stored hash costlier than the server's own is refused before
+`argon2` runs on it; the ceiling is `m ≤ M_COST_KIB` and
+`m × t ≤ M_COST_KIB × T_COST`, with lanes left alone at first and capped at
+`p ≤ P_COST` later that day; and a refused hash is
+verified against the decoy first, so the refusal takes a wrong password's
+time. Each mutation below was put in by hand, run against the tests named,
+and taken out.
+
+**O214.** The four new tests in `session/tests.rs` run the server on a
+runtime whose blocking pool has one thread, or two for the five Basic
+requests, hold every permit with `VerifyLimit::hold_all`, send wrong
+passwords, wait until the permits' test-only count of waiters shows them
+all waiting, and then ask by key and by cookie. Against `main`'s blocking
+wait, with only the count of waiters added, all four failed: the requests
+by key and by cookie found no free thread and were
+not answered within the tests' 20-second limit, and of the five Basic
+requests only two reached the wait:
+
+```
+2 of 5 requests reached the wait for a permit
+```
+
+With the wait awaited they pass, and so do the rest of `taiyaku-serve`'s
+tests, 1,549 in all. The three places that waited a fixed `SETTLE` for a
+request to reach the wait (`told_after_waiting`, `burst` and
+`a_request_waiting_for_a_permit_does_not_hold_the_librarys_connection`, ten
+tests in all) now wait for the count of waiters instead.
+
+Put back by hand, each failed only its own path's tests among the 38 whose
+names carry "permit", "lockout" or "leaves_the_pool", and the rest of the 38
+passed:
+
+- the wait moved back onto the pool, as a `Handle::block_on` inside the
+  second pool task: on the login route, the login's pool test; on Basic,
+  Basic's and the five-request test; on the password change, its own;
+- the first lockout read taken out: on each path, its
+  `a_locked_out_..._is_refused_while_every_permit_is_held`;
+- the second lockout read, under the permit, taken out: on each path, its
+  `..._that_waited_for_a_permit_reads_the_lockout_again`.
+
+With the code restored, the 38 passed. The flood that filed O214, measured
+by O57's whole-branch review on release builds pinned to eight and sixteen
+cores, was not run again.
+
+**O217.** `credential/tests.rs`' three new tests failed against `main`'s
+`verify_password_in`, and the other 21 of the module's tests passed: a hash
+at one pass and 1,024 KiB more memory than this module's was verified, and
+so was one at 64 KiB and 609 passes, one pass more than this module's
+memory times its passes allows. `argon2`'s own verifier accepts both, which
+the tests assert, so `the_two_verifiers_agree` no longer holds "a larger m";
+its memory starts at 64 blocks so that this module's own hash still grows
+it, and `a_working_memory_grows_to_what_a_run_needs_and_is_used_again` grows
+a memory from a hash 1,024 KiB under this module's cost to this module's.
+A hash at 64 KiB and 608 passes verifies.
+
+The lanes cap came after, with a test of its own,
+`a_stored_hash_in_more_lanes_than_this_modules_is_refused`, and a lanes
+case in the decoy test. Both failed on the change before the cap, where a
+hash at 64 KiB, two passes and two lanes was verified; with the cap they
+pass, and a hash at that cost in one lane verifies.
+`the_two_verifiers_agree` no longer holds "two lanes".
+
+Put in by hand:
+
+- the check taken out: all four new tests failed;
+- the memory comparison taken out: the memory test and the decoy test;
+- the work comparison taken out: the work test and the decoy test;
+- the lanes comparison taken out, or one lane more allowed: the lanes test
+  and the decoy test;
+- the decoy's run taken out, or run in a memory of its own: the decoy test;
+- `>=` for any `>`: the hashes this module writes, which sit on all three
+  limits, were refused, and six of `credential`'s tests failed for memory,
+  seven for work and ten for lanes, among them
+  `a_password_round_trips_and_a_wrong_one_does_not` and
+  `the_two_verifiers_agree`. Across `taiyaku-library` it was 10, 11 and 14,
+  the same four `account::` tests failing each time.
+
+The decoy is verified with `verified_in`, past the check, so a decoy over
+the ceiling could not recurse, and the decoy test asserts the decoy is
+within the ceiling.
+
+Lanes were left alone at first, and they are not free. Each adds
+two initial blocks, and in argon2i, and argon2id's first half pass, an
+address block for each segment, so many lanes make many short segments;
+2,432 is the most lanes this module's memory allows, at eight blocks a
+lane. The owner capped lanes at `P_COST`, one, which this module's hashes
+already use.
+
+The review of the cap found that a stored `p` of 2²⁹ or more overflows
+`p × 8` inside `argon2::Params`' own check, as it did before these changes.
+Builds with overflow checks on, the tests' among them, panicked there, and
+release builds, which this workspace builds without them, refused the hash
+at once, without the decoy's run. So did every hash whose parameters
+`argon2` rejects, such as more lanes than its 2²⁴ − 1, two lanes in less
+than 16 KiB, or a number past a `u32`: each was refused in microseconds,
+where a wrong password takes a verify's time, so a planted one showed in
+the timing.
+
+**The whole-branch review's fixes.** `over_this_modules_cost` reads `p`
+off the PHC string before the parameters are built, every `p` since the
+review of these fixes (below), so no stored lane count over one reaches
+`argon2::Params`, and it counts a hash whose parameters `argon2` cannot
+read as over the cost.
+`a_hash_whose_parameters_argon2_rejects_is_refused_after_the_decoys_run`
+planted four hashes, this module's own with `p` at 2²⁹, with `p` at 2²⁴,
+with `m` at 8 and `p` at 2, and with `m` at 2³², and asserted each was
+refused after the decoy's run with no panic. Against the code before the
+fixes it failed, and the other 25 of the module's tests passed: the first
+case panicked at `params.rs:119`, and the other three were refused with no
+block of the memory grown. It passes with them. Put in by hand on the
+fixes: the read off the string taken out failed the lanes test, the decoy
+test and this one; one lane more allowed there, the lanes test and the
+decoy test; a hash `argon2` cannot read counted within the cost, this one;
+and `>=` for its `>`, 14 of `taiyaku-library`'s tests, ten of them
+`credential`'s.
+
+The review also found that nothing held O214's second pool task in place:
+with it made a call in place on all three paths at once, one of
+`taiyaku-serve`'s tests failed, a login's count of working memories, and
+only because two of its four memories went unused.
+`a_login_holding_its_permit_does_not_stall_the_runtime` and its neighbours
+for Basic and the password change run on a `current_thread` runtime. Each
+holds every permit and sends a wrong password, and once the request waits
+for a permit it takes the library's connection on a watchdog thread, frees
+the permits and spawns a canary. Under its permit the request asks for the
+connection first: on the pool the canary runs and lets the watchdog go, and
+on the runtime's one thread it cannot, and the watchdog lets go only at its
+half-second deadline. With a path's second pool task made a call in place,
+that path's test failed and the other three tests named
+`..._does_not_stall_the_runtime` passed; restored, all four passed.
+
+**The review of those fixes** found three more. `argon2` reads the last of
+a parameter named twice and the lanes read took the first, so a hash at
+64 KiB naming `p=1,p=2` verified in two lanes, and this module's own naming
+`p=1,p=536870912` still panicked at `params.rs:119` in a test build. Every
+`p` is read now. The planted-hash test gained both: on the code that read
+the first `p` it failed, the first verifying and the second panicking, and
+with that read put back by hand it fails and no other `taiyaku-library`
+test does.
+
+Nothing held the first pool task, the lockout read before the wait, on the
+login route or the password change.
+`a_login_reading_the_lockout_before_its_permit_does_not_stall_the_runtime`
+sends a wrong login through the router with the watchdog holding the
+connection from the start, since nothing before `login`'s read asks for it.
+`a_password_change_reading_the_lockout_before_its_permit_does_not_stall_the_runtime`
+calls the change with what `auth::guard` leaves on a browser's request,
+since through the router the guard's own read would wait out the watchdog.
+With each path's first read made a call in place, its test failed and the
+other 1,577 of `taiyaku-serve`'s tests passed.
+
+And a hash that `PasswordHash::new` parses and `argon2` will not run was
+refused at once, with no decoy. `verified_in` now answers an error only
+where nothing was hashed, and `verify_password_in` runs the decoy for any
+error.
+`a_hash_argon2_will_not_run_is_refused_after_the_decoys_run` plants six
+hashes at 64 KiB: with no output, with neither a salt nor an output, in an
+algorithm and at a version `argon2` does not have, with a salt that is not
+base64, and with one too short for it. Before the change each was refused
+with the memory at no blocks, or at the short salt's own 64; with the
+decoy skipped again by hand for a hash that did not run, it fails and no
+other `taiyaku-library` test does.

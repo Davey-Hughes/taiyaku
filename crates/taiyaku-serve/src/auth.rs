@@ -457,10 +457,9 @@ fn refuse(path: &str) -> Response {
 ///
 /// **Resolution happens inside `spawn_blocking`**, for the same reason every
 /// handler in `routes.rs` does: it reads SQLite through `state.library`, whose
-/// `conn()` is a `MutexGuard`, and a password additionally waits for a verify
-/// permit (O57) and costs an argon2 verify. Doing any of it on the async
-/// worker stalls that whole tokio worker, and on a `current_thread` runtime
-/// the whole runtime — which
+/// `conn()` is a `MutexGuard`, and a password costs an argon2 verify. Doing
+/// any of it on the async worker stalls that whole tokio worker, and on a
+/// `current_thread` runtime the whole runtime — which
 /// `auth::tests::the_guard_does_not_stall_the_runtime` asserts. A guard is the
 /// one piece of middleware every request passes through, so it is the worst
 /// possible place to block.
@@ -476,7 +475,20 @@ pub(crate) async fn guard(
     // Kept for the re-issue below, before `offered` moves into the closure.
     let cookie = offered.cookie.clone();
     let secure_cookies = state.auth.secure_cookies;
-    let resolved = tokio::task::spawn_blocking(move || resolve(&state, &offered)).await;
+    let resolved = {
+        let state = Arc::clone(&state);
+        tokio::task::spawn_blocking(move || resolve(&state, &offered)).await
+    };
+    // A password waits for its verify permit here, between two pool tasks,
+    // so the wait holds no thread and a flood of passwords leaves the pool to
+    // every other request (O57, O214).
+    let resolved = match resolved {
+        Ok(Resolved::Password(password)) => {
+            let permit = state.auth.verifies.permit().await;
+            tokio::task::spawn_blocking(move || verify_basic(&state, password, permit)).await
+        }
+        other => other,
+    };
 
     let (principal, by) = match resolved {
         Ok(Resolved::Yes(principal, by)) => (principal, by),
@@ -537,6 +549,19 @@ enum Resolved {
     /// `refuse_cross_site` answers the open routes the same way, and for the
     /// same reason.
     CrossSite,
+    /// A password over `Authorization: Basic` that passed the first lockout
+    /// read, to be verified once the guard holds a permit for it.
+    Password(BasicPassword),
+}
+
+/// What [`verify_basic`] needs of a password the lockout did not refuse.
+struct BasicPassword {
+    name: String,
+    secret: String,
+    /// The pair's limiter key.
+    key: String,
+    /// The address's limiter key.
+    wide: String,
 }
 
 /// Which credential answered for this request.
@@ -679,15 +704,15 @@ fn resolve(state: &ServeState, offered: &Offered) -> Resolved {
 /// **And the password path does not hold the library's mutex across argon2.**
 /// `Library::conn()` hands out a `MutexGuard` over the shared connection
 /// (O42, O52), so verifying inside its scope would serialise every
-/// other request in the server behind every login's hashing. The hash is
-/// read, the guard dropped, the verify done, and the connection taken again
+/// other request in the server behind every login's hashing. [`verify_basic`]
+/// reads the hash, drops the guard, verifies, and takes the connection again
 /// afterwards — short holds rather than one long one.
 ///
 /// **What it does hold across argon2 is one of the server's verify permits
-/// (O57)**, taken after the lockout has been read once and before it is read
-/// again, and given back once the failure is recorded or the verify has
+/// (O57)**, which the guard awaits once this has read the lockout, and which
+/// [`verify_basic`] gives back once the failure is recorded or the verify has
 /// passed. The permit comes before the connection every time. The key path
-/// above returns before it is taken.
+/// returns before it is waited for.
 fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Resolved {
     use taiyaku_library::{account, credential};
 
@@ -716,46 +741,53 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
     // `Authorization: Basic` verification only*". Without this a password is
     // guessable at any rate through any guarded route, while ten tries at the
     // login route lock the pair out — guarding the one door a guesser has no
-    // reason to use. Each guess also takes a `spawn_blocking` thread, and then
-    // one of the server's verify permits and the working memory that comes
-    // with it until its failure is recorded, so the limit is what bounds an
-    // unauthenticated denial of service as much as a dictionary.
+    // reason to use. Each guess also takes one of the server's verify permits
+    // and the working memory that comes with it until its failure is
+    // recorded, so the limit bounds a denial of service as much as a guess.
     //
     // Checked before the account is looked up, so a locked-out pair costs no
-    // argon2 at all.
+    // argon2 at all, and before the wait for a permit, so it costs no wait.
     let key = account::attempt_key(&account::limiter_address(client), &name);
     // **The wider key too, for the same reason the login route takes it**: the
     // pair's name half comes from the `Authorization` header, so a fresh
-    // invented name is a fresh counter and the decoy verify below runs against
-    // no ceiling at all. `account::address_key` has the reasoning; this route
-    // needs it more than the login route does, because it is reachable on every
-    // guarded path rather than one.
+    // invented name is a fresh counter and the decoy verify in `verify_basic`
+    // runs against no ceiling at all. `account::address_key` has the
+    // reasoning; this route needs it more than the login route does, because
+    // it is reachable on every guarded path rather than one.
     let wide = account::address_key(&account::limiter_address(client));
-    // Asked twice below, so written once: both reads must ask both keys and
-    // fail the same way.
-    let locked_out = || {
-        let conn = state.library.conn();
-        // **Fails closed.** `unwrap_or(false)` would read any SQLite error as
-        // "not locked out", and the errors reachable here — SQLITE_BUSY on the
-        // one mutex-guarded connection `serve` and `library import` share —
-        // are exactly the ones a flood produces. The control bounding both the
-        // dictionary attack and what each guess costs would disappear under the
-        // load that triggers it.
-        account::is_address_locked_out(&conn, &wide).unwrap_or(true)
-            || account::is_locked_out(&conn, &key).unwrap_or(true)
-    };
-    if locked_out() {
+    if crate::session::locked_out(state, &wide, &key) {
         return Resolved::TooMany;
     }
-    // **That read bounds the flood and not the burst (O57)**: requests that
-    // arrive together all pass it before any of them has failed. So a permit
-    // is taken and the lockout read again under it, and the permit is kept
-    // until this request's own failure is recorded. The only requests
-    // between the second read and that record are the ones holding a permit.
-    // The first read stays for the caller already locked out, who is refused
-    // by it without a wait. `session::login` does the same.
-    let mut permit = state.auth.verifies.permit();
-    if locked_out() {
+    Resolved::Password(BasicPassword {
+        name,
+        secret,
+        key,
+        wide,
+    })
+}
+
+/// The rest of [`from_basic`], for a caller holding `permit`: the lockout read
+/// again, then the verify and its record.
+///
+/// **That first read bounds the flood and not the burst (O57)**: requests
+/// that arrive together all pass it before any of them has failed. So the
+/// lockout is read again under the permit, which is kept until this request's
+/// own failure is recorded, and the only requests between the second read and
+/// that record are the ones holding a permit. `session::login` does the same.
+fn verify_basic(
+    state: &ServeState,
+    password: BasicPassword,
+    mut permit: crate::session::VerifyPermit,
+) -> Resolved {
+    use taiyaku_library::{account, credential};
+
+    let BasicPassword {
+        name,
+        secret,
+        key,
+        wide,
+    } = password;
+    if crate::session::locked_out(state, &wide, &key) {
         return Resolved::TooMany;
     }
 
@@ -817,6 +849,18 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
         return Resolved::No;
     };
     Resolved::Yes(Principal::from_account(&found, access), By::Password)
+}
+
+/// [`from_basic`] and then [`verify_basic`] under a permit, as the guard runs
+/// them, for a test that resolves a header without sending a request.
+#[cfg(test)]
+fn from_basic_verified(state: &ServeState, header: &str, client: std::net::IpAddr) -> Resolved {
+    match from_basic(state, header, client) {
+        Resolved::Password(password) => {
+            verify_basic(state, password, state.auth.verifies.permit_blocking())
+        }
+        other => other,
+    }
 }
 
 /// The name and secret inside an `Authorization: Basic` header.

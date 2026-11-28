@@ -2064,14 +2064,9 @@ const NO_PEER: &str = "0.0.0.0";
 /// How long a test waits for something a correct server does not let happen.
 ///
 /// **No correct run needs it to be any particular length**: what a test reads
-/// after the wait is the same on a machine of any speed. The wait is spent in
-/// two ways.
-///
-/// **A test that has sent requests leaves them this long before it acts**,
-/// and there only a wrong implementation makes use of it. A request waiting
-/// for a permit this test holds is still waiting however long this is. A
-/// request that should have waited and did not needs time to get past the
-/// point it should have stopped at, and this is that time.
+/// after the wait is the same on a machine of any speed. A test that has sent
+/// requests does not wait this long for them to reach the wait for a permit:
+/// it reads [`VerifyLimit::waiting`] until they have.
 ///
 /// **The probe in [`told_and_free_at_each_commit`] is given this long to take
 /// a permit**, at each commit. At a commit the request makes while it holds
@@ -2129,6 +2124,19 @@ async fn answers(sent: Vec<tokio::task::JoinHandle<StatusCode>>) -> Option<Vec<S
     .ok()
 }
 
+/// Whether `count` requests were waiting for a permit at once within
+/// [`LIMIT`]. The count is read every few milliseconds, so no test has to
+/// guess how long a request takes to reach the wait.
+async fn waiting_reaches(state: &ServeState, count: usize) -> bool {
+    tokio::time::timeout(LIMIT, async {
+        while state.auth.verifies.waiting() < count {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
 /// Sends `request` while this test holds every permit, raises `key` to
 /// `ceiling` while the request waits, frees the permits, and answers what the
 /// request was told.
@@ -2145,9 +2153,10 @@ async fn told_after_waiting(
 ) -> StatusCode {
     let held = state.auth.verifies.hold_all();
     let sent = send_all(state, vec![request]);
-    tokio::time::sleep(SETTLE).await;
+    let waited = waiting_reaches(state, 1).await;
     wind(state, key, ceiling);
     drop(held);
+    assert!(waited, "the request did not wait for a permit");
     answers(sent)
         .await
         .expect("the request answers once the permits are free")[0]
@@ -2169,16 +2178,19 @@ async fn told_while_every_permit_is_held(
 }
 
 /// Sends `requests` while this test holds every permit, so that none of them
-/// is verified before the permits are freed. Then frees the permits and
-/// answers what each was told.
-///
-/// [`SETTLE`] is how long the requests are given to reach the point they
-/// wait at; nothing asserts that they did.
+/// is verified before the permits are freed. Once every one of them waits
+/// for a permit, frees the permits and answers what each was told.
 async fn burst(state: &Arc<ServeState>, requests: Vec<Request<Body>>) -> Vec<StatusCode> {
+    let count = requests.len();
     let held = state.auth.verifies.hold_all();
     let sent = send_all(state, requests);
-    tokio::time::sleep(SETTLE).await;
+    let waited = waiting_reaches(state, count).await;
     drop(held);
+    assert!(
+        waited,
+        "{} of {count} requests waited for a permit",
+        state.auth.verifies.waiting()
+    );
     answers(sent)
         .await
         .expect("every request answers once the permits are free")
@@ -2544,6 +2556,351 @@ async fn only_a_password_verify_waits_for_a_permit() {
     );
 }
 
+/// A request by the fixture's API key, which a reader's OPDS client sends.
+fn by_key() -> Request<Body> {
+    Request::get("/api/works")
+        .header("host", "test")
+        .header(
+            "authorization",
+            crate::test_support::fixture_authorization(),
+        )
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// A request by `cookie`, which the reader in a browser sends.
+fn by_cookie(cookie: &str) -> Request<Body> {
+    Request::get("/api/works")
+        .header("host", "test")
+        .header("cookie", cookie)
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// A runtime whose blocking pool has `threads` threads, for the tests that
+/// fill it. `#[tokio::test]` cannot set the pool's size.
+fn runtime_with_pool(threads: usize) -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(threads)
+        .enable_all()
+        .build()
+        .expect("builds a runtime")
+}
+
+/// What a request by API key and one by session cookie are told while the
+/// requests `waiters` makes wait for a permit, on a server whose blocking
+/// pool has `threads` threads, or `None` if either of the two waited.
+///
+/// The waiters are sent while this test holds every permit, and the two once
+/// every waiter is waiting. Then the permits are freed, and each waiter must
+/// be told `refused`, so none of them was lost on the way.
+fn served_while_waiters_wait(
+    threads: usize,
+    waiters: impl FnOnce(&str) -> Vec<Request<Body>>,
+    refused: StatusCode,
+) -> Option<Vec<StatusCode>> {
+    runtime_with_pool(threads).block_on(async {
+        let tmp = crate::test_support::Fixture::new("verify-permit-pool");
+        let state = Arc::new(crate::test_support::state(&tmp));
+        let cookie = crate::test_support::fixture_session_cookie(&state.library);
+        let waiters = waiters(&cookie);
+        let count = waiters.len();
+
+        let held = state.auth.verifies.hold_all();
+        let waiting = send_all(&state, waiters);
+        let reached = waiting_reaches(&state, count).await;
+        let served = if reached {
+            answers(send_all(&state, vec![by_key(), by_cookie(&cookie)])).await
+        } else {
+            None
+        };
+        // Before the assertions, so a waiter parked on a pool thread lets it
+        // go and the runtime can shut down.
+        drop(held);
+
+        assert!(
+            reached,
+            "{} of {count} requests reached the wait for a permit",
+            state.auth.verifies.waiting()
+        );
+        assert_eq!(
+            answers(waiting)
+                .await
+                .expect("every waiter answers once the permits are free"),
+            vec![refused; count],
+            "a waiter was not answered as a wrong password once the permits were free"
+        );
+        served
+    })
+}
+
+/// **O214: a login waiting for a permit holds no thread of the blocking
+/// pool.** On a pool of one thread, a reader's key and cookie are served
+/// while a login waits. A login waiting on a pool thread would hold the only
+/// one, and every request after it would wait as long as the login does.
+#[test]
+fn a_login_waiting_for_a_permit_leaves_the_pool_to_other_requests() {
+    let served = served_while_waiters_wait(
+        1,
+        |_| vec![wrong_login("nobody-at-all")],
+        StatusCode::UNAUTHORIZED,
+    );
+
+    assert_eq!(
+        served,
+        Some(vec![StatusCode::OK, StatusCode::OK]),
+        "a request by key or by cookie waited while a login waited for a verify permit, \
+         so the login held the blocking pool's one thread"
+    );
+}
+
+/// The same over `Authorization: Basic`, where the guard waits for the
+/// permit, on every guarded route.
+#[test]
+fn a_basic_request_waiting_for_a_permit_leaves_the_pool_to_other_requests() {
+    let served = served_while_waiters_wait(
+        1,
+        |_| vec![wrong_basic(crate::test_support::FIXTURE_NAME)],
+        StatusCode::UNAUTHORIZED,
+    );
+
+    assert_eq!(
+        served,
+        Some(vec![StatusCode::OK, StatusCode::OK]),
+        "a request by key or by cookie waited while a Basic request waited for a verify \
+         permit, so the Basic request held the blocking pool's one thread"
+    );
+}
+
+/// The same on the password change, whose wrong guess answers 403.
+#[test]
+fn a_password_change_waiting_for_a_permit_leaves_the_pool_to_other_requests() {
+    let served = served_while_waiters_wait(
+        1,
+        |cookie| vec![wrong_change(cookie)],
+        StatusCode::FORBIDDEN,
+    );
+
+    assert_eq!(
+        served,
+        Some(vec![StatusCode::OK, StatusCode::OK]),
+        "a request by key or by cookie waited while a password change waited for a \
+         verify permit, so the change held the blocking pool's one thread"
+    );
+}
+
+/// **More requests wait for a permit than the pool has threads**, which is
+/// what a flood of Basic passwords from many names makes of a public server:
+/// here five, on a pool of two.
+#[test]
+fn more_basic_requests_wait_for_a_permit_than_the_pool_has_threads() {
+    const POOL: usize = 2;
+
+    let served = served_while_waiters_wait(
+        POOL,
+        |_| {
+            (0..POOL + 3)
+                .map(|n| wrong_basic(&format!("nobody-{n}")))
+                .collect()
+        },
+        StatusCode::UNAUTHORIZED,
+    );
+
+    assert_eq!(
+        served,
+        Some(vec![StatusCode::OK, StatusCode::OK]),
+        "a request by key or by cookie waited while Basic requests waited for verify \
+         permits"
+    );
+}
+
+/// Whether the runtime stood still while `request` did the work it holds a
+/// permit for, and what it was told (`None`: not within [`LIMIT`]), on a
+/// runtime of one thread. Once the request waits for a permit, a watchdog
+/// thread takes the library's connection and the permits are freed. The work
+/// asks for the connection first: on the pool it waits there and the canary
+/// runs, and on the runtime it stops the one thread until the watchdog's
+/// deadline. Taken before the wait, the connection would block the pool task
+/// ahead of it instead and free the runtime (`the_runtime_stalls_on`'s shape).
+async fn the_runtime_stalls_under_the_permit(
+    state: &Arc<ServeState>,
+    request: Request<Body>,
+) -> (bool, Option<StatusCode>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let held = state.auth.verifies.hold_all();
+    let sent = send_all(state, vec![request]);
+    let waited = waiting_reaches(state, 1).await;
+
+    let canary_ran = Arc::new(AtomicBool::new(false));
+    let (taken, connection_taken) = std::sync::mpsc::channel();
+    let watchdog = std::thread::spawn({
+        let library = Arc::clone(&state.library);
+        let canary_ran = Arc::clone(&canary_ran);
+        move || {
+            let conn = library.conn();
+            taken
+                .send(())
+                .expect("the test is still waiting on this channel");
+            // Half a second for a task on an idle runtime to be polled once.
+            // Only a failure waits the whole way out.
+            let mut waited = 0;
+            while !canary_ran.load(Ordering::SeqCst) && waited < 50 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                waited += 1;
+            }
+            let rescued_by_deadline = !canary_ran.load(Ordering::SeqCst);
+            drop(conn);
+            rescued_by_deadline
+        }
+    });
+    connection_taken
+        .recv()
+        .expect("the watchdog thread is still running");
+
+    // The permits before the canary, so the request is woken first and the
+    // runtime polls it first.
+    drop(held);
+    let canary = tokio::spawn({
+        let canary_ran = Arc::clone(&canary_ran);
+        async move { canary_ran.store(true, Ordering::SeqCst) }
+    });
+
+    let told = answers(sent).await.map(|statuses| statuses[0]);
+    canary.await.expect("the canary did not panic");
+    let stalled = watchdog.join().expect("the watchdog did not panic");
+    assert!(waited, "the request did not wait for a permit");
+    (stalled, told)
+}
+
+/// **O214: what a login does under its permit runs on the blocking pool, not
+/// on the runtime.** The lockout read again, the account's look-up, argon2
+/// and the record of the failure each wait on the library's mutex or take a
+/// verify's time, and on a runtime worker they would stop every request
+/// that worker serves.
+#[tokio::test(flavor = "current_thread")]
+async fn a_login_holding_its_permit_does_not_stall_the_runtime() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-stall-login");
+    let state = Arc::new(crate::test_support::state(&tmp));
+
+    let (stalled, told) =
+        the_runtime_stalls_under_the_permit(&state, wrong_login(crate::test_support::FIXTURE_NAME))
+            .await;
+
+    assert!(
+        !stalled,
+        "the runtime stood still while a login held its verify permit, so the login's \
+         work under the permit ran on the runtime and not on the blocking pool"
+    );
+    assert_eq!(told, Some(StatusCode::UNAUTHORIZED));
+}
+
+/// The same over `Authorization: Basic`, where `auth::guard` holds the
+/// permit and `auth::verify_basic` does the work under it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_basic_request_holding_its_permit_does_not_stall_the_runtime() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-stall-basic");
+    let state = Arc::new(crate::test_support::state(&tmp));
+
+    let (stalled, told) =
+        the_runtime_stalls_under_the_permit(&state, wrong_basic(crate::test_support::FIXTURE_NAME))
+            .await;
+
+    assert!(
+        !stalled,
+        "the runtime stood still while a Basic request held its verify permit, so \
+         `verify_basic` ran on the runtime and not on the blocking pool"
+    );
+    assert_eq!(told, Some(StatusCode::UNAUTHORIZED));
+}
+
+/// The same on the password change, whose wrong guess answers 403.
+#[tokio::test(flavor = "current_thread")]
+async fn a_password_change_holding_its_permit_does_not_stall_the_runtime() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-stall-change");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+
+    let (stalled, told) = the_runtime_stalls_under_the_permit(&state, wrong_change(&cookie)).await;
+
+    assert!(
+        !stalled,
+        "the runtime stood still while a password change held its verify permit, so \
+         the change's work under the permit ran on the runtime and not on the blocking \
+         pool"
+    );
+    assert_eq!(told, Some(StatusCode::FORBIDDEN));
+}
+
+/// **O214: a login's first lockout read, before its permit, runs on the
+/// blocking pool too.** It asks for the library's connection, which a scan
+/// can hold for as long as it runs (O52), and on a runtime worker it would
+/// stop every request that worker serves. Through the router: nothing before
+/// `login`'s read asks for the connection, so the watchdog holds it from the
+/// start (`test_support::the_runtime_stalls_on`).
+#[tokio::test(flavor = "current_thread")]
+async fn a_login_reading_the_lockout_before_its_permit_does_not_stall_the_runtime() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-first-read-login");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let router = build_router(Arc::clone(&state));
+    let request = wrong_login(crate::test_support::FIXTURE_NAME);
+
+    let (stalled, response) =
+        crate::test_support::the_runtime_stalls_on(&state.library, async move {
+            router.oneshot(request).await.expect("answers")
+        })
+        .await;
+
+    assert!(
+        !stalled,
+        "the runtime stood still while a login read the lockout before its permit, so \
+         that read ran on the runtime and not on the blocking pool"
+    );
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// The same on the password change, called with what `auth::guard` leaves
+/// on a browser's request: through the router the guard's own read would
+/// wait out the watchdog on the pool, and the change's would find it gone.
+#[tokio::test(flavor = "current_thread")]
+async fn a_password_change_reading_the_lockout_before_its_permit_does_not_stall_the_runtime() {
+    let tmp = crate::test_support::Fixture::new("verify-permit-first-read-change");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let mut extensions = axum::http::Extensions::new();
+    extensions.insert(crate::auth::Principal {
+        user_id: 1,
+        role: crate::auth::Role::Admin,
+        can_download: true,
+        can_stream: true,
+        can_stamp: false,
+        access: account::Access::Every,
+    });
+    extensions.insert(crate::auth::By::Cookie);
+    let body = PasswordChange {
+        current: "not the password".to_string(),
+        next: "a new one".to_string(),
+    };
+
+    let (stalled, response) = crate::test_support::the_runtime_stalls_on(
+        &state.library,
+        change_password(
+            axum::extract::State(Arc::clone(&state)),
+            extensions,
+            axum::http::HeaderMap::new(),
+            axum::Json(body),
+        ),
+    )
+    .await;
+
+    assert!(
+        !stalled,
+        "the runtime stood still while a password change read the lockout before its \
+         permit, so that read ran on the runtime and not on the blocking pool"
+    );
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
 /// **The order is the permit, then the library's connection.** A login, a
 /// Basic request and a password change all wait for a permit, and while they
 /// wait the connection is free for anyone.
@@ -2566,7 +2923,7 @@ async fn a_request_waiting_for_a_permit_does_not_hold_the_librarys_connection() 
             wrong_change(&cookie),
         ],
     );
-    tokio::time::sleep(SETTLE).await;
+    let all_waiting = waiting_reaches(&state, 3).await;
 
     // On a thread of its own and under a time limit, so that a connection
     // somebody is holding fails this test instead of hanging it.
@@ -2583,6 +2940,10 @@ async fn a_request_waiting_for_a_permit_does_not_hold_the_librarys_connection() 
         .is_ok();
     drop(held);
 
+    assert!(
+        all_waiting,
+        "the three requests did not all wait for a permit"
+    );
     assert!(
         free,
         "the library's connection could not be taken while three requests waited for a \
@@ -2629,7 +2990,7 @@ async fn told_and_free_at_each_commit(
                 let (took, waited) = std::sync::mpsc::channel();
                 let limit = limit.clone();
                 std::thread::spawn(move || {
-                    let permit = limit.permit();
+                    let permit = limit.permit_blocking();
                     let _ = took.send(());
                     drop(permit);
                 });
@@ -2778,7 +3139,7 @@ async fn a_password_change_hashes_the_new_password_holding_no_permit() {
             .library
             .conn()
             .commit_hook(Some(move || {
-                drop(limit.permit());
+                drop(limit.permit_blocking());
                 false
             }))
             .expect("installs the hook");
