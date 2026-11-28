@@ -308,9 +308,11 @@ function paging(
     const [first, end] = span(this)
     return [line(first, 100), line(end, 100)] as unknown as DOMRectList
   })
+  // The reading area's box as the text's, a page that fills its window, so a
+  // tap's thirds are the same of either.
   vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
     function (this: Element) {
-      if (isText(this)) {
+      if (isText(this) || this.classList.contains('book-area')) {
         return {
           left: 0,
           right: 600,

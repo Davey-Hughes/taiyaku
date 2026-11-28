@@ -4,7 +4,7 @@
 
 This is **project 3 of 4** of the book reader's gaps. It started as "tap a word to look it up" plus "known-word tracking". The user dropped known-word tracking on 2026-11-17.
 
-**Built on project 2.** Project 2 (search and vertical Japanese, #260) merged first, so this takes its Japanese test from `isJapanese` and its paged thirds from `pageTurnedBy`, which turns them the other way in vertical text.
+**Built on project 2.** Project 2 (search and vertical Japanese, #260) merged first, so this takes its Japanese test from `isJapanese` and its paged thirds from `pageTurnedBy`, which turns them the other way in vertical text. Since 2026-11-27 (O598) `pageTurnedBy` divides the reading area, the reader's width less a docked panel's room, and no longer the text's own box.
 
 ## Why
 
@@ -62,8 +62,23 @@ There is one sensible way to find the word: the server matches the longest prefi
     2026-11-25 (O572, the book image pages PR). Paged outside compare, a tap
     on its outer thirds turns the page, and one in the middle third shows or
     hides the bars, as on a page's empty room, opening nothing; only a tap on
-    its picture, where it is set in a link, follows the link.*
+    its picture, where it is set in a link, follows the link. Since
+    2026-11-27 (O598) the thirds are the reading area's (see the note on empty
+    space below), so where that area is more than half as wide again as the
+    column, most of a linked picture lies in the middle third and a click
+    across most of it follows the link.*
   - A tap on empty space, or on whitespace or punctuation, does what it does today.
+    *Note, 2026-11-27: narrowed for the room beside a paged column by the
+    owner's ruling of 2026-11-27 (O598, the book reader window thirds PR).
+    Paged, a tap's thirds are the reading area's, the reader's width less the
+    room set beside the text for a docked panel, and no longer the text's own
+    box, so on a window wider than the column a tap on the room either side of
+    it turns the page or shows the bars by the third it falls in, as a tap on
+    the text does, compared too, and on a vertical page the room above and
+    below the text does the same; before, a tap there did nothing.
+    The room beside a docked panel, outside the area, still does nothing.
+    Scrolled, that room is the text's own box and already showed or hid the
+    bars.*
   - A double tap still peeks.
     *Note, 2026-11-25: narrowed for a paged book's outer thirds by the book
     reader edge taps PR (O579). It is that PR's own change, not an owner
@@ -75,7 +90,9 @@ There is one sensible way to find the word: the server matches the longest prefi
     unless something drawn under the point takes it, such as a link or a
     figure (O596). A peek is a double tap in the middle third. Compared, a
     tap there still waits, so a sentence double-tapped in any column lights
-    what each edition has for it (O591).*
+    what each edition has for it (O591). Since 2026-11-27 (O598) the outer
+    thirds are the reading area's, so the room either side of a paged column,
+    where it lies in an outer third, turns the page in the same way.*
 - **Finding the word:**
   - Convert the tap point to a character offset in the block's own text through `document.caretPositionFromPoint` (or `caretRangeFromPoint`) and the `wordNodes` count `selectionIn` uses, so offsets are block-text offsets.
   - Japanese edition (`Edition.language` starts with `ja`): send the next 16 characters to `/at`, and the word is `[at, at + length)`. `length` 0 means "Not in the dictionary" for the tapped character alone.
@@ -116,7 +133,7 @@ There is one sensible way to find the word: the server matches the longest prefi
 Where this section and the design above disagree, this section is what was built.
 
 - **The route** is `GET /api/dictionary/{lang}/at/{text}`, the text a path segment and not `?text=`. A route ending in `/at` would take the word "at" from the existing `/api/dictionary/{lang}/{word}`.
-- **Paged text:** a tap in either outer third turns the page, and only the middle third looks up (`pageTurnedBy`). A word in an outer third is looked up only by selecting it (O361).
+- **Paged text:** a tap in either outer third of the reading area, the reader's width less a docked panel's room (since 2026-11-27, O598), turns the page, and only its middle third looks up (`pageTurnedBy`). A word in an outer third is looked up only by selecting it (O361).
 - **The prefix rule:** a prefix stops before a character `ends_word` names, one that is not alphanumeric, a diacritic (U+0300 to U+036F), a kana voicing mark or a variation selector. That is whitespace, punctuation and non-alphabetic symbols, and also other non-alphabetic marks and format characters such as a zero-width space. The reader's `beginsWord` keeps to the same rule.
 - **The length** is not always the prefix's own: it takes in the variation selectors and the stress marks U+0300 and U+0301 after the word, and a prefix that another diacritic or voicing mark follows is not tried. `key()` is unchanged, so a selector or stress mark inside a word answers the shorter word before it (O362).
 - **A tap on a character:** a tap counts only where it is on a character, within its box along the line and, across the line, in its glyph or the leading beside it, read along the text's own axes, so vertical text is covered, and a tap on a ruby's reading counts as its base. A tap on a character's far half counts as that character, and a tap on no character keeps its usual meaning.

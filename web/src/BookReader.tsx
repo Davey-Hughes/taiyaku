@@ -89,6 +89,7 @@ import {
   matchShows,
   movesAnchor,
   offScreen,
+  onPage,
   onPageLink,
   onPicture,
   type Pages,
@@ -2138,13 +2139,14 @@ export function BookReader({
         ) {
           return
         }
-        const onText = text.current?.contains(event.target as Node)
+        const inPage = onPage(text.current, event.target, event.clientX)
         // The first tap's panel may have moved the text from under the finger
-        // or opened there, so on the text, or anything near the first, this
-        // tap undoes the look-up and peeks at what the first was on. A control
-        // away from the first is the reader's next move, and left to act.
+        // or opened there, so on the page, the room beside the text as well as
+        // the words, or anything near the first, this tap undoes the look-up
+        // and peeks at what the first was on. A control away from the first is
+        // the reader's next move, and left to act.
         const second =
-          onText ||
+          inPage ||
           (Math.abs(event.clientX - last.lookedUp.x) <= DOUBLE_TAP_REACH &&
             Math.abs(event.clientY - last.lookedUp.y) <= DOUBLE_TAP_REACH)
         if (second && event.timeStamp - last.at < DOUBLE_TAP_MS) {
@@ -2158,12 +2160,12 @@ export function BookReader({
         }
         // Too slow for that, yet let through the panel while it might have
         // been: the words under the panel are not what the reader can see.
-        // Only words: a bar drawn over the panel still takes its own press.
+        // Only the page: a bar drawn over the panel still takes its own press.
         const over = event.currentTarget.querySelector(LOOK_UP_PANEL)
         const box = over?.getBoundingClientRect()
         if (
           box &&
-          onText &&
+          inPage &&
           event.clientX >= box.left &&
           event.clientX <= box.right &&
           event.clientY >= box.top &&
@@ -2172,6 +2174,208 @@ export function BookReader({
           event.stopPropagation()
           takeTapClick(event, { mouseToo: true })
         }
+      }}
+      // The page's presses, on the text and on the room beside it inside the
+      // reading area (`onPage`): on a wide window a paged column leaves room
+      // either side, which is read by the area's thirds as the words are. A
+      // press on a bar or a panel is its own.
+      onPointerDown={(event) => {
+        if (!onPage(text.current, event.target, event.clientX)) return
+        setSelected(undefined)
+        pressed.current = {
+          x: event.clientX,
+          y: event.clientY,
+          at: event.timeStamp,
+        }
+      }}
+      onPointerUp={(event) => {
+        if (!onPage(text.current, event.target, event.clientX)) return
+        const down = pressed.current
+        if (
+          !down ||
+          Math.abs(event.clientX - down.x) > TAP_SLOP ||
+          Math.abs(event.clientY - down.y) > TAP_SLOP ||
+          event.timeStamp - down.at > TAP_HOLD
+        ) {
+          if (notes.ready) setSelected(selectionIn(text.current))
+          if (lookupOn && panel === 'lookup') {
+            // The selection may be the light still, now the bar's to keep.
+            light.current = undefined
+            setPanel(undefined)
+          }
+          return
+        }
+        setFound((f) => (f?.drawn ? { match: f.match, drawn: false } : f))
+        const target = event.target as Element
+        // A page image fills its page, so a tap on it is the page's, as it
+        // would be over words: its outer thirds turn the page, and its middle
+        // shows or hides the bars. It opens nothing, its page already sizing
+        // it as the comic reader sizes a page, and only its picture follows a
+        // link it is set in (`onPageLink`). Scrolled or compared, it is
+        // drawn as any figure is, and a tap on it is a figure's. A tap that
+        // is the page's takes its click, a mouse's too, which would
+        // otherwise follow a web link the image is set in as well.
+        const pageImage =
+          pagedPref && !comparing ? target.closest('[data-page-image]') : null
+        const pagesOwn =
+          pageImage !== null &&
+          !onPageLink(text.current, pageImage, event.clientX, event.clientY)
+        if (pagesOwn) {
+          // A mousedown after this, as a finger's is, or before it, as a
+          // mouse's is, would leave focus on that link, and Enter and Space
+          // with it. So one after is held, and focus leaves whatever holds
+          // it, a link a page away too, as a press on words would take it.
+          takeTapClick(event, { keepFocus: true, mouseToo: true })
+          ;(document.activeElement as HTMLElement | null)?.blur()
+        }
+        // An image set in a link is the link's, below.
+        const tapped =
+          pagesOwn || target.closest('[data-link]')
+            ? undefined
+            : (target.closest<HTMLImageElement>('img.book-inline-image') ??
+              target
+                .closest('[data-figure]')
+                ?.querySelector<HTMLImageElement>('img'))
+        if (tapped) {
+          // Not the first of a double tap, which would peek on the next,
+          // and an earlier tap's wait stopped, which would hide the bars
+          // or turn the page under the image.
+          lastTap.current = undefined
+          window.clearTimeout(tapWait.current)
+          tapWait.current = undefined
+          setFigure({
+            src: tapped.getAttribute('src') ?? '',
+            alt: tapped.alt,
+          })
+          takeTapClick(event)
+          return
+        }
+        const picked = target
+          .closest<HTMLElement>('[data-pick]')
+          ?.dataset.pick?.split(':')
+        if (pinning && picked) {
+          void pick(picked[0] as 'left' | 'right', Number(picked[1]))
+          takeTapClick(event)
+          return
+        }
+        const link = pagesOwn
+          ? null
+          : target.closest<HTMLElement>('[data-link]')
+        if (link) {
+          // At once, and not the first of a double tap, so a second tap on
+          // it neither peeks nor stops the first. A web link is the
+          // browser's, which opens it in a new tab. An earlier tap's wait
+          // is stopped, which would hide Back or turn the page after a jump.
+          lastTap.current = undefined
+          window.clearTimeout(tapWait.current)
+          tapWait.current = undefined
+          if (link.dataset.linkUrl === undefined) {
+            follow(link)
+            takeTapClick(event)
+          }
+          return
+        }
+        const noted = target.closest<HTMLElement>('[data-note]')?.dataset.note
+        const hiddenLine = hideTranslation
+          ? target.closest<HTMLElement>('[data-interlinear]')?.dataset
+              .interlinear
+          : undefined
+        // A tap that neither looks a word up nor turns a page at once (both
+        // below) acts after `TAP_MS`; a second tap before then stops it,
+        // and one later in `DOUBLE_TAP_MS` undoes it. Either peeks, taking
+        // back what the browser selected for a double or triple click.
+        const last = lastTap.current
+        const double = last && event.timeStamp - last.at < DOUBLE_TAP_MS
+        // A look-up acts at once, so it is the first of a double tap as a
+        // link is not: the reader takes the second before it comes here.
+        // In pages the outer thirds turn them, so only the middle looks up.
+        if (
+          !double &&
+          lookupOn &&
+          pageTurnedBy(text.current, event.clientX) === 0 &&
+          lookUpTapped(target, event.clientX, event.clientY)
+        ) {
+          lastTap.current = {
+            at: event.timeStamp,
+            toggledBars: false,
+            lookedUp: {
+              ...tappedOn(target),
+              x: event.clientX,
+              y: event.clientY,
+            },
+          }
+          window.clearTimeout(tapWait.current)
+          tapWait.current = undefined
+          setTapsPass(true)
+          window.clearTimeout(tapsPassWait.current)
+          tapsPassWait.current = window.setTimeout(
+            () => setTapsPass(false),
+            DOUBLE_TAP_MS,
+          )
+          // The tap's mousedown, held back below, is what would clear the
+          // reader's selection, and an answer naming no word lights nothing
+          // to replace it.
+          window.getSelection()?.removeAllRanges()
+          // The panel has just taken the focus, which the tap's mousedown
+          // would otherwise hand to the text under the finger.
+          takeTapClick(event, { keepFocus: true })
+          return
+        }
+        if (last && double) {
+          lastTap.current = undefined
+          takeTapClick(event)
+          if (tapWait.current !== undefined) {
+            window.clearTimeout(tapWait.current)
+            tapWait.current = undefined
+          } else if (last.toggledBars) {
+            setBars((b) => !b)
+          }
+          window.getSelection()?.removeAllRanges()
+          peekAt(tappedOn(target))
+          return
+        }
+        const page = pageTurnedBy(text.current, event.clientX)
+        // A tap in a page's outer third turns it at once rather than after
+        // `TAP_MS`, a wait every turn would feel. So it is not the first of
+        // a double tap either: a second quick tap there is a tap of its own
+        // on the new page, turning it again unless what the turn drew under
+        // the point takes a tap, such as a link or a figure (O596), and a
+        // peek is a double tap in the middle third. Compared, it waits, so
+        // a sentence double-tapped in any column lights what each has for it.
+        if (page !== 0 && !comparing && !panel && !noted && !hiddenLine) {
+          lastTap.current = undefined
+          window.clearTimeout(tapWait.current)
+          tapWait.current = undefined
+          // A double-click's second click there, where it turns the page
+          // again, has selected a word on the page it turns from.
+          window.getSelection()?.removeAllRanges()
+          turn(text.current, page)
+          // A finger's mousedown comes after the turn, onto what the new
+          // page drew under it, where a web link would take focus and
+          // Enter and Space with it. So it is held, and focus leaves what
+          // holds it as a press on the text would.
+          takeTapClick(event, { keepFocus: true })
+          ;(document.activeElement as HTMLElement | null)?.blur()
+          return
+        }
+        lastTap.current = {
+          at: event.timeStamp,
+          toggledBars: !panel && !noted && !hiddenLine && page === 0,
+        }
+        tapWait.current = window.setTimeout(() => {
+          tapWait.current = undefined
+          if (noted) opening(noted)
+          else if (hiddenLine) {
+            const n = Number(hiddenLine)
+            setRevealed((r) => {
+              const next = new Set(r)
+              if (!next.delete(n)) next.add(n)
+              return next
+            })
+          } else if (panel) setPanel(undefined)
+          else if (page !== 0) turn(text.current, page)
+          else setBars((b) => !b)
+        }, TAP_MS)
       }}
     >
       {bars && (
@@ -2204,294 +2408,102 @@ export function BookReader({
           onChange={(next) => setOthers(next.slice(1))}
         />
       )}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: the keys are its in-book links', each a focusable `role="link"`, caught here once rather than on every link drawn. */}
-      <div
-        className="book-text"
-        ref={text}
-        style={
-          comparing
-            ? ({
-                ...textStyle,
-                '--columns': columnKeys.length,
-              } as CSSProperties)
-            : textStyle
-        }
-        lang={edition.language ?? undefined}
-        data-typeface={typeset.typeface}
-        data-page={typeset.page}
-        data-justify={typeset.justify || undefined}
-        data-indent={typeset.indent || undefined}
-        data-paged={pagedPref || undefined}
-        data-compared={comparing || undefined}
-        data-vertical={vertical || undefined}
-        data-upscale={upscale || undefined}
-        onScroll={() => {
-          const host = text.current
-          const placing = scrolledTo(host, placedAt.current)
-          // The sight check's scroll is the app moving the text, not the
-          // reader: it ends no hold and saves no place.
-          const sight = scrolledTo(host, sightScroll.current)
-          sightScroll.current = undefined
-          if (!placing) placedAt.current = undefined
-          if (!placing && !sight) {
-            heldMatch.current = undefined
-            movedOn.current = true
+      <div className="book-area">
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: the keys are its in-book links', each a focusable `role="link"`, caught here once rather than on every link drawn. */}
+        <div
+          className="book-text"
+          ref={text}
+          style={
+            comparing
+              ? ({
+                  ...textStyle,
+                  '--columns': columnKeys.length,
+                } as CSSProperties)
+              : textStyle
           }
-          const now = topBlock(text.current)
-          const read = at[now] - at[top]
-          if (read > 0 && read <= MOST_READ_AT_ONCE) {
-            session.current.paced.read += read
-          }
-          // With the mode on the placing's own scroll leaves the selection
-          // on the page, and the bar is set again beside it above.
-          if (!lookupOn || !placing) setSelected(undefined)
-          // Paged, the anchor is held while it is on the page, or sizing the
-          // text up and down creeps back a page at a time. Scrolled, a screen
-          // has no such edge: the line at the top is the reader's. A held
-          // match stays the anchor through the sight check's scroll, so the
-          // text laid out again, as closing a panel set in beside it does,
-          // goes back to the match; with none held the anchor follows that
-          // scroll, so laying out again keeps the word where it was taken.
-          if (
-            !placing &&
-            !(sight && heldMatch.current) &&
-            (!pagedPref || !shows(host, anchor.current))
-          ) {
-            anchor.current = anchorOf(host)
-          }
-          setTop(now)
-          setPages(pagesOf(text.current, entries, now))
-          // Beside the look-up the text is set in narrower. The set-in's own
-          // placing keeps the reader where they were, in a layout they never
-          // read in, so the block saved before still names their page and
-          // one taken here can reopen a page early at full width. Any other
-          // placing, a size step, a resize or reading aloud, lays the text
-          // out again or moves the reader, which leaves that block stale.
-          const kept = placing && placedSetIn.current && panel === 'lookup'
-          if (!sight && !kept) {
-            save({ edition: place.edition, block: resumeBlock(host) })
-          }
-        }}
-        onPointerMove={(event) => {
-          // A page image's link shows its pointer only where a press follows
-          // it: no stylesheet can tell its picture from the room `contain`
-          // leaves around it inside the image's own box.
-          const figure = (event.target as Element).closest('[data-page-image]')
-          if (!figure || !pagedPref || comparing) return
-          figure
-            .querySelector('a[data-link] img')
-            ?.toggleAttribute(
-              'data-follows',
-              onPageLink(text.current, figure, event.clientX, event.clientY),
+          lang={edition.language ?? undefined}
+          data-typeface={typeset.typeface}
+          data-page={typeset.page}
+          data-justify={typeset.justify || undefined}
+          data-indent={typeset.indent || undefined}
+          data-paged={pagedPref || undefined}
+          data-compared={comparing || undefined}
+          data-vertical={vertical || undefined}
+          data-upscale={upscale || undefined}
+          onScroll={() => {
+            const host = text.current
+            const placing = scrolledTo(host, placedAt.current)
+            // The sight check's scroll is the app moving the text, not the
+            // reader: it ends no hold and saves no place.
+            const sight = scrolledTo(host, sightScroll.current)
+            sightScroll.current = undefined
+            if (!placing) placedAt.current = undefined
+            if (!placing && !sight) {
+              heldMatch.current = undefined
+              movedOn.current = true
+            }
+            const now = topBlock(text.current)
+            const read = at[now] - at[top]
+            if (read > 0 && read <= MOST_READ_AT_ONCE) {
+              session.current.paced.read += read
+            }
+            // With the mode on the placing's own scroll leaves the selection
+            // on the page, and the bar is set again beside it above.
+            if (!lookupOn || !placing) setSelected(undefined)
+            // Paged, the anchor is held while it is on the page, or sizing the
+            // text up and down creeps back a page at a time. Scrolled, a screen
+            // has no such edge: the line at the top is the reader's. A held
+            // match stays the anchor through the sight check's scroll, so the
+            // text laid out again, as closing a panel set in beside it does,
+            // goes back to the match; with none held the anchor follows that
+            // scroll, so laying out again keeps the word where it was taken.
+            if (
+              !placing &&
+              !(sight && heldMatch.current) &&
+              (!pagedPref || !shows(host, anchor.current))
+            ) {
+              anchor.current = anchorOf(host)
+            }
+            setTop(now)
+            setPages(pagesOf(text.current, entries, now))
+            // Beside the look-up the text is set in narrower. The set-in's own
+            // placing keeps the reader where they were, in a layout they never
+            // read in, so the block saved before still names their page and
+            // one taken here can reopen a page early at full width. Any other
+            // placing, a size step, a resize or reading aloud, lays the text
+            // out again or moves the reader, which leaves that block stale.
+            const kept = placing && placedSetIn.current && panel === 'lookup'
+            if (!sight && !kept) {
+              save({ edition: place.edition, block: resumeBlock(host) })
+            }
+          }}
+          onPointerMove={(event) => {
+            // A page image's link shows its pointer only where a press follows
+            // it: no stylesheet can tell its picture from the room `contain`
+            // leaves around it inside the image's own box.
+            const figure = (event.target as Element).closest(
+              '[data-page-image]',
             )
-        }}
-        onPointerDown={(event) => {
-          setSelected(undefined)
-          pressed.current = {
-            x: event.clientX,
-            y: event.clientY,
-            at: event.timeStamp,
-          }
-        }}
-        onPointerUp={(event) => {
-          const down = pressed.current
-          if (
-            !down ||
-            Math.abs(event.clientX - down.x) > TAP_SLOP ||
-            Math.abs(event.clientY - down.y) > TAP_SLOP ||
-            event.timeStamp - down.at > TAP_HOLD
-          ) {
-            if (notes.ready) setSelected(selectionIn(text.current))
-            if (lookupOn && panel === 'lookup') {
-              // The selection may be the light still, now the bar's to keep.
-              light.current = undefined
-              setPanel(undefined)
-            }
-            return
-          }
-          setFound((f) => (f?.drawn ? { match: f.match, drawn: false } : f))
-          const target = event.target as Element
-          // A page image fills its page, so a tap on it is the page's, as it
-          // would be over words: its outer thirds turn the page, and its middle
-          // shows or hides the bars. It opens nothing, its page already sizing
-          // it as the comic reader sizes a page, and only its picture follows a
-          // link it is set in (`onPageLink`). Scrolled or compared, it is
-          // drawn as any figure is, and a tap on it is a figure's. A tap that
-          // is the page's takes its click, a mouse's too, which would
-          // otherwise follow a web link the image is set in as well.
-          const pageImage =
-            pagedPref && !comparing ? target.closest('[data-page-image]') : null
-          const pagesOwn =
-            pageImage !== null &&
-            !onPageLink(text.current, pageImage, event.clientX, event.clientY)
-          if (pagesOwn) {
-            // A mousedown after this, as a finger's is, or before it, as a
-            // mouse's is, would leave focus on that link, and Enter and Space
-            // with it. So one after is held, and focus leaves whatever holds
-            // it, a link a page away too, as a press on words would take it.
-            takeTapClick(event, { keepFocus: true, mouseToo: true })
-            ;(document.activeElement as HTMLElement | null)?.blur()
-          }
-          // An image set in a link is the link's, below.
-          const tapped =
-            pagesOwn || target.closest('[data-link]')
-              ? undefined
-              : (target.closest<HTMLImageElement>('img.book-inline-image') ??
-                target
-                  .closest('[data-figure]')
-                  ?.querySelector<HTMLImageElement>('img'))
-          if (tapped) {
-            // Not the first of a double tap, which would peek on the next,
-            // and an earlier tap's wait stopped, which would hide the bars
-            // or turn the page under the image.
-            lastTap.current = undefined
-            window.clearTimeout(tapWait.current)
-            tapWait.current = undefined
-            setFigure({
-              src: tapped.getAttribute('src') ?? '',
-              alt: tapped.alt,
-            })
-            takeTapClick(event)
-            return
-          }
-          const picked = target
-            .closest<HTMLElement>('[data-pick]')
-            ?.dataset.pick?.split(':')
-          if (pinning && picked) {
-            void pick(picked[0] as 'left' | 'right', Number(picked[1]))
-            takeTapClick(event)
-            return
-          }
-          const link = pagesOwn
-            ? null
-            : target.closest<HTMLElement>('[data-link]')
-          if (link) {
-            // At once, and not the first of a double tap, so a second tap on
-            // it neither peeks nor stops the first. A web link is the
-            // browser's, which opens it in a new tab. An earlier tap's wait
-            // is stopped, which would hide Back or turn the page after a jump.
-            lastTap.current = undefined
-            window.clearTimeout(tapWait.current)
-            tapWait.current = undefined
-            if (link.dataset.linkUrl === undefined) {
-              follow(link)
-              takeTapClick(event)
-            }
-            return
-          }
-          const noted = target.closest<HTMLElement>('[data-note]')?.dataset.note
-          const hiddenLine = hideTranslation
-            ? target.closest<HTMLElement>('[data-interlinear]')?.dataset
-                .interlinear
-            : undefined
-          // A tap that neither looks a word up nor turns a page at once (both
-          // below) acts after `TAP_MS`; a second tap before then stops it,
-          // and one later in `DOUBLE_TAP_MS` undoes it. Either peeks, taking
-          // back what the browser selected for a double or triple click.
-          const last = lastTap.current
-          const double = last && event.timeStamp - last.at < DOUBLE_TAP_MS
-          // A look-up acts at once, so it is the first of a double tap as a
-          // link is not: the reader takes the second before it comes here.
-          // In pages the outer thirds turn them, so only the middle looks up.
-          if (
-            !double &&
-            lookupOn &&
-            pageTurnedBy(text.current, event.clientX) === 0 &&
-            lookUpTapped(target, event.clientX, event.clientY)
-          ) {
-            lastTap.current = {
-              at: event.timeStamp,
-              toggledBars: false,
-              lookedUp: {
-                ...tappedOn(target),
-                x: event.clientX,
-                y: event.clientY,
-              },
-            }
-            window.clearTimeout(tapWait.current)
-            tapWait.current = undefined
-            setTapsPass(true)
-            window.clearTimeout(tapsPassWait.current)
-            tapsPassWait.current = window.setTimeout(
-              () => setTapsPass(false),
-              DOUBLE_TAP_MS,
+            if (!figure || !pagedPref || comparing) return
+            figure
+              .querySelector('a[data-link] img')
+              ?.toggleAttribute(
+                'data-follows',
+                onPageLink(text.current, figure, event.clientX, event.clientY),
+              )
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter') return
+            const link = (event.target as Element).closest<HTMLElement>(
+              '[data-link-block]',
             )
-            // The tap's mousedown, held back below, is what would clear the
-            // reader's selection, and an answer naming no word lights nothing
-            // to replace it.
-            window.getSelection()?.removeAllRanges()
-            // The panel has just taken the focus, which the tap's mousedown
-            // would otherwise hand to the text under the finger.
-            takeTapClick(event, { keepFocus: true })
-            return
-          }
-          if (last && double) {
-            lastTap.current = undefined
-            takeTapClick(event)
-            if (tapWait.current !== undefined) {
-              window.clearTimeout(tapWait.current)
-              tapWait.current = undefined
-            } else if (last.toggledBars) {
-              setBars((b) => !b)
-            }
-            window.getSelection()?.removeAllRanges()
-            peekAt(tappedOn(target))
-            return
-          }
-          const page = pageTurnedBy(text.current, event.clientX)
-          // A tap in a page's outer third turns it at once rather than after
-          // `TAP_MS`, a wait every turn would feel. So it is not the first of
-          // a double tap either: a second quick tap there is a tap of its own
-          // on the new page, turning it again unless what the turn drew under
-          // the point takes a tap, such as a link or a figure (O596), and a
-          // peek is a double tap in the middle third. Compared, it waits, so
-          // a sentence double-tapped in any column lights what each has for it.
-          if (page !== 0 && !comparing && !panel && !noted && !hiddenLine) {
-            lastTap.current = undefined
-            window.clearTimeout(tapWait.current)
-            tapWait.current = undefined
-            // A double-click's second click there, where it turns the page
-            // again, has selected a word on the page it turns from.
-            window.getSelection()?.removeAllRanges()
-            turn(text.current, page)
-            // A finger's mousedown comes after the turn, onto what the new
-            // page drew under it, where a web link would take focus and
-            // Enter and Space with it. So it is held, and focus leaves what
-            // holds it as a press on the text would.
-            takeTapClick(event, { keepFocus: true })
-            ;(document.activeElement as HTMLElement | null)?.blur()
-            return
-          }
-          lastTap.current = {
-            at: event.timeStamp,
-            toggledBars: !panel && !noted && !hiddenLine && page === 0,
-          }
-          tapWait.current = window.setTimeout(() => {
-            tapWait.current = undefined
-            if (noted) opening(noted)
-            else if (hiddenLine) {
-              const n = Number(hiddenLine)
-              setRevealed((r) => {
-                const next = new Set(r)
-                if (!next.delete(n)) next.add(n)
-                return next
-              })
-            } else if (panel) setPanel(undefined)
-            else if (page !== 0) turn(text.current, page)
-            else setBars((b) => !b)
-          }, TAP_MS)
-        }}
-        onKeyDown={(event) => {
-          if (event.key !== 'Enter') return
-          const link = (event.target as Element).closest<HTMLElement>(
-            '[data-link-block]',
-          )
-          if (!link) return
-          event.preventDefault()
-          follow(link)
-        }}
-      >
-        {compared ?? paragraphs}
+            if (!link) return
+            event.preventDefault()
+            follow(link)
+          }}
+        >
+          {compared ?? paragraphs}
+        </div>
       </div>
       {bars && (
         <div
@@ -3111,7 +3123,7 @@ const BookBlock = memo(function BookBlock({
  * figure has no `data-block`, so a peek, a note and the block at the top pass
  * over it to the blocks either side, and the reader's place, where the screen
  * starts in one, names it from the block after it (`Anchor.figure`). Tapped,
- * it opens full size (`data-figure`, in the text's `onPointerUp`), or follows
+ * it opens full size (`data-figure`, in the reader's `onPointerUp`), or follows
  * the link it is set in; a page image, paged and not compared, opens nothing
  * (`onPageLink`).
  */

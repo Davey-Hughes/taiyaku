@@ -4,8 +4,10 @@ import { BookReader } from '../src/BookReader'
 import {
   type Anchor,
   kept,
+  onPage,
   pagesOf,
   pageTurnedBy,
+  readingArea,
   show,
   shows,
   topBlock,
@@ -262,6 +264,65 @@ describe('bookPages, in each of the four flows', () => {
       }
     })
   }
+})
+
+/**
+ * A paged text 300 px wide in a reader 900 px wide, set in from the right by
+ * `beside` px as `book.css` sets it beside a docked panel, and centred in
+ * what is left, as a wide window draws it.
+ */
+function narrow(beside = 0): HTMLElement {
+  const host = mount(
+    <div
+      className="reader"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        width: 900,
+        height: 300,
+      }}
+    >
+      <div
+        className="book-text"
+        data-paged
+        style={{ width: 300, marginRight: beside }}
+      >
+        <p data-block={0}>
+          <span data-text>{WORDS.slice(0, 3000)}</span>
+        </p>
+      </div>
+    </div>,
+  )
+  return host.querySelector('.book-text') as HTMLElement
+}
+
+describe('the reading area a tap’s thirds are of', () => {
+  it('is the reader’s box where the text is narrower, so the room beside the text is in an outer third and the text’s own left third in the middle', () => {
+    const el = narrow()
+    const reader = el.parentElement as HTMLElement
+    expect(el.getBoundingClientRect().left).toBe(300)
+    expect(readingArea(el)).toEqual({ left: 0, right: 900 })
+    expect(pageTurnedBy(el, 100)).toBe(-1)
+    expect(pageTurnedBy(el, 350)).toBe(0)
+    expect(pageTurnedBy(el, 550)).toBe(0)
+    expect(pageTurnedBy(el, 800)).toBe(1)
+    expect(onPage(el, reader, 100)).toBe(true)
+    expect(onPage(el, reader, 800)).toBe(true)
+    expect(onPage(el, el.querySelector('[data-text]'), 350)).toBe(true)
+    expect(onPage(el, document.body, 100)).toBe(false)
+  })
+
+  it('stops short of the room set beside the text for a docked panel, which is not the page’s', () => {
+    const el = narrow(300)
+    const reader = el.parentElement as HTMLElement
+    expect(el.getBoundingClientRect().left).toBe(150)
+    expect(readingArea(el)).toEqual({ left: 0, right: 600 })
+    expect(pageTurnedBy(el, 180)).toBe(-1)
+    expect(pageTurnedBy(el, 380)).toBe(0)
+    expect(pageTurnedBy(el, 420)).toBe(1)
+    expect(onPage(el, reader, 590)).toBe(true)
+    expect(onPage(el, reader, 610)).toBe(false)
+  })
 })
 
 /** Whether some line of block `block` of `el` lies inside its box, top to bottom. */

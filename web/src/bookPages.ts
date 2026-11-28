@@ -820,16 +820,52 @@ export function turn(text: HTMLElement | null, by: number) {
 }
 
 /**
- * The pages a tap at `x` turns: back on the left third, on on the right, none
- * between or unpaged. Vertical the other way about, since its lines are read
- * right to left and a printed one's pages are turned leftward.
+ * The reading area `text` is set in, whose thirds a tap is read by: the box
+ * of `.book-area`, its parent, less the room `book.css` keeps beside it for a
+ * docked panel as the text's margin. Paged on a wide window the text is a
+ * column narrower than that, and the room either side of it is the page's
+ * too, so the thirds are the area's and not the column's.
+ */
+export function readingArea(text: HTMLElement): {
+  left: number
+  right: number
+} {
+  const box = (text.parentElement ?? text).getBoundingClientRect()
+  const style = getComputedStyle(text)
+  return {
+    left: box.left + (Number.parseFloat(style.marginLeft) || 0),
+    right: box.right - (Number.parseFloat(style.marginRight) || 0),
+  }
+}
+
+/**
+ * Whether a press on `target` at `x` is on the page `text` shows: on the
+ * text, or on its parent's own room beside it inside the reading area. The
+ * room beside a docked panel is not the page's, nor is a bar or a panel.
+ */
+export function onPage(
+  text: HTMLElement | null,
+  target: EventTarget | null,
+  x: number,
+): boolean {
+  if (!text || !(target instanceof Node)) return false
+  if (text.contains(target)) return true
+  if (target !== text.parentElement) return false
+  const area = readingArea(text)
+  return x >= area.left && x < area.right
+}
+
+/**
+ * The pages a tap at `x` turns: back on the reading area's left third, on on
+ * the right, none between or unpaged. Vertical the other way about, since its
+ * lines are read right to left and a printed one's pages are turned leftward.
  */
 export function pageTurnedBy(text: HTMLElement | null, x: number): number {
   if (!text) return 0
   const flow = flowOf(text)
   if (!flow.paged) return 0
-  const box = text.getBoundingClientRect()
-  const at = (x - box.left) / box.width
+  const area = readingArea(text)
+  const at = (x - area.left) / (area.right - area.left)
   const on = flow.vertical ? -1 : 1
   return at < 1 / 3 ? -on : at > 2 / 3 ? on : 0
 }
@@ -864,7 +900,8 @@ export function onPicture(
  * follows the link its picture is set in. Nothing on it opens it, its page
  * already sizing it as the comic reader sizes a page, so a press does
  * something of its own only on a linked one, on its picture (`onPicture`),
- * and in the page's middle third, since the outer thirds turn the page.
+ * and in the reading area's middle third, since the outer thirds turn the
+ * page.
  */
 export function onPageLink(
   text: HTMLElement | null,

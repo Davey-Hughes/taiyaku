@@ -1312,6 +1312,314 @@ function firstLineY(host: HTMLElement): number {
 }
 
 /**
+ * A paged book's column is narrower than a wide window, and a tap's thirds
+ * are the reading area's, the window less a docked panel, not the column's:
+ * the room either side of the column is the page's, and turns it as an outer
+ * third of the words does (`readingArea`, `onPage`).
+ */
+describe('a tap or click on a paged book at a wide window', () => {
+  // Each block opens a page, so there are pages either way to turn to.
+  const pages = document.createElement('style')
+  pages.textContent =
+    '.book-text[data-paged] > [data-block] { break-before: column }'
+  beforeAll(() => document.head.append(pages))
+  afterAll(() => {
+    pages.remove()
+    vi.unstubAllGlobals()
+  })
+
+  const PAGED = { mode: 'scroll', paged: true }
+
+  /** The reader on `drawn` in a window `size`, with `layout` and `prefs` stored for this test alone. */
+  async function opened(
+    layout: object,
+    {
+      drawn = edged(false) as object,
+      size = [1920, 1080] as [number, number],
+      prefs = {} as Record<string, object>,
+    } = {},
+  ) {
+    const was = [window.innerWidth, window.innerHeight] as const
+    onTestFinished(() => page.viewport(...was))
+    await page.viewport(...size)
+    const stored: Record<string, object> = { 'book-layout': layout, ...prefs }
+    for (const [id, value] of Object.entries(stored)) {
+      localStorage.setItem(`taiyaku.prefs.${id}`, JSON.stringify(value))
+    }
+    onTestFinished(() => {
+      for (const id of Object.keys(stored)) {
+        localStorage.removeItem(`taiyaku.prefs.${id}`)
+      }
+    })
+    const host = await reader(drawn)
+    const text = textOf(host)
+    const box = text.getBoundingClientRect()
+    return {
+      host,
+      text,
+      box,
+      room: host.querySelector('.book-area') as HTMLElement,
+      y: box.top + box.height / 2,
+    }
+  }
+
+  const click = (x: number, y: number) =>
+    act(async () => {
+      await mouse.moveTo(x, y)
+      await mouse.press()
+      await mouse.release()
+    })
+
+  /** Past a tap's wait, and past the time a second tap would be the second of a double. */
+  const waited = () => act(() => new Promise((done) => setTimeout(done, 350)))
+
+  const barsUp = (host: HTMLElement) =>
+    host.querySelector('.reader-top-bar') !== null
+
+  /** Twelve blocks, each in a row of its own with the same of a second edition. */
+  const paired = () => {
+    const one = edged(false).editions.en
+    const blocks = [...one.blocks, ...one.blocks]
+    const rows = blocks.map((_, i) => [i, i + 1, i, i + 1])
+    return {
+      ...edged(false),
+      editions: {
+        en: { ...one, blocks },
+        fr: { ...one, blocks, label: 'French', language: 'fr' },
+      },
+      alignments: [{ to: 'fr', links: rows, sentences: rows, pins: [] }],
+    }
+  }
+
+  /** On a page by the arrow key, so the page is not turned by a tap. */
+  const onByKey = async () => {
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
+      )
+    })
+    await settled()
+  }
+
+  it('at 1920×1080, turns the page at once from a mouse’s click on the room right of the column, on, and on the room left of it, back', async () => {
+    const { text, box, room, y } = await opened(PAGED)
+    expect(box.left).toBeGreaterThan(200)
+    expect(window.innerWidth - box.right).toBeGreaterThan(200)
+    const left = box.left / 2
+    const right = (box.right + window.innerWidth) / 2
+    expect(document.elementFromPoint(left, y)).toBe(room)
+    expect(document.elementFromPoint(right, y)).toBe(room)
+    const ups = pagesAtUp(text)
+    await click(right, y)
+    await click(right, y)
+    await click(left, y)
+    // THE STATE THIS TEST NAMES: each click on the room turned the page by
+    // the time its `pointerup` had passed the reader.
+    expect(ups).toEqual([1, 2, 1])
+  })
+
+  it('at 1920×1080, turns the page at once from a finger’s tap on the room right of the column, on, and on the room left of it, back', async () => {
+    const { host, text, box, room, y } = await opened(PAGED)
+    const left = box.left / 2
+    const right = (box.right + window.innerWidth) / 2
+    expect(document.elementFromPoint(left, y)).toBe(room)
+    expect(document.elementFromPoint(right, y)).toBe(room)
+    const ups = pagesAtUp(text)
+    await tapAt(right, y)
+    await tapAt(right, y)
+    await tapAt(left, y)
+    await settled()
+    // THE STATE THIS TEST NAMES: each tap on the room turned the page at its
+    // `pointerup`.
+    expect(ups).toEqual([1, 2, 1])
+    expect(barsUp(host)).toBe(false)
+  })
+
+  it('at 1920×1080, shows the bars from a click on the column’s own left third, which is in the window’s middle third, turning nothing', async () => {
+    const { host, text, box, y } = await opened(PAGED)
+    const x = box.left + box.width / 6
+    expect(x).toBeGreaterThan(window.innerWidth / 3)
+    expect(x).toBeLessThan((window.innerWidth * 2) / 3)
+    expect(document.elementFromPoint(x, y)?.closest('.book-text')).toBe(text)
+    await onByKey()
+    expect(pageOf(text)).toBe(1)
+    await click(x, y)
+    await waited()
+    // THE STATE THIS TEST NAMES: the window's middle third, so no turn.
+    expect(pageOf(text)).toBe(1)
+    expect(barsUp(host)).toBe(true)
+  })
+
+  it('at 1920×1080 with the text at its smallest, shows and then hides the bars from clicks on the room beside the column in the window’s middle third, turning nothing', async () => {
+    const { host, text, box, room, y } = await opened(PAGED, {
+      prefs: { 'book-text': { textSize: 12 } },
+    })
+    expect(box.left).toBeGreaterThan(window.innerWidth / 3 + 20)
+    const x = (window.innerWidth / 3 + box.left) / 2
+    expect(document.elementFromPoint(x, y)).toBe(room)
+    await onByKey()
+    expect(pageOf(text)).toBe(1)
+    await click(x, y)
+    await waited()
+    // THE STATE THIS TEST NAMES: the room in the window's middle third shows
+    // the bars, as the words there do, and turns nothing.
+    expect(pageOf(text)).toBe(1)
+    expect(barsUp(host)).toBe(true)
+    await click(x, y)
+    await waited()
+    expect(barsUp(host)).toBe(false)
+    expect(pageOf(text)).toBe(1)
+  })
+
+  it('compared at 1920×1080, turns the page from the room either side of the columns after the wait, and shows the bars from the columns’ left third in the window’s middle', async () => {
+    const { host, text, box, room, y } = await opened(
+      { mode: 'compare', paged: true },
+      { drawn: paired() },
+    )
+    expect(text.dataset.compared).toBe('true')
+    expect(text.scrollWidth).toBeGreaterThan(2 * text.clientWidth)
+    const left = box.left / 2
+    const right = (box.right + window.innerWidth) / 2
+    expect(document.elementFromPoint(left, y)).toBe(room)
+    expect(document.elementFromPoint(right, y)).toBe(room)
+    await click(right, y)
+    await waited()
+    await click(right, y)
+    await waited()
+    await click(left, y)
+    await waited()
+    // THE STATE THIS TEST NAMES: compared, the room turns the page too, after
+    // the wait a compared tap keeps.
+    expect(pageOf(text)).toBe(1)
+    expect(barsUp(host)).toBe(false)
+    const x = box.left + box.width * 0.3
+    expect(x).toBeLessThan(box.left + box.width / 3)
+    expect(x).toBeGreaterThan(window.innerWidth / 3)
+    await click(x, y)
+    await waited()
+    expect(pageOf(text)).toBe(1)
+    expect(barsUp(host)).toBe(true)
+  })
+
+  it('scrolled at 1920×1080, shows and then hides the bars from clicks on the room beside the column, as from one on the words', async () => {
+    const { host, text, y } = await opened({ mode: 'scroll', paged: false })
+    const words = (
+      host.querySelector('.book-text [data-block="0"]') as Element
+    ).getBoundingClientRect()
+    expect(words.left).toBeGreaterThan(200)
+    const x = words.left / 2
+    const top = text.scrollTop
+    await click(x, y)
+    await waited()
+    expect(barsUp(host)).toBe(true)
+    await click(x, y)
+    await waited()
+    expect(barsUp(host)).toBe(false)
+    expect(text.scrollTop).toBe(top)
+  })
+
+  it('at 390×844, where the column fills the window, turns from either outer third at once and shows the bars from the middle', async () => {
+    const { host, text, box, room, y } = await opened(PAGED, {
+      size: [390, 844],
+    })
+    const reader = room.getBoundingClientRect()
+    expect(box.left).toBe(reader.left)
+    expect(box.right).toBe(reader.right)
+    const ups = pagesAtUp(text)
+    await click(box.left + (box.width * 5) / 6, y)
+    await click(box.left + (box.width * 5) / 6, y)
+    await click(box.left + box.width / 6, y)
+    expect(ups).toEqual([1, 2, 1])
+    await click(box.left + box.width / 2, y)
+    await waited()
+    expect(pageOf(text)).toBe(1)
+    expect(barsUp(host)).toBe(true)
+  })
+
+  /** Each computed `touch-action` from `el` up to the document's root. */
+  const touchActions = (el: Element) => {
+    const seen: string[] = []
+    for (let at: Element | null = el; at; at = at.parentElement) {
+      seen.push(getComputedStyle(at).touchAction)
+    }
+    return seen
+  }
+
+  /** The docked panel of the book's contents, opened or closed by its key. */
+  const contents = () =>
+    document.querySelector('[role="dialog"][aria-label="Contents"]')
+  const toggleContents = async () => {
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 't', bubbles: true }),
+      )
+    })
+    await settled()
+  }
+
+  it('at 1920×1080, takes the browser’s double-tap zoom from the room beside the column and from the text, and from nothing over the bars or a docked panel', async () => {
+    const { host, text, box, room, y } = await opened(PAGED)
+    expect(document.elementFromPoint(box.left / 2, y)).toBe(room)
+    await click(box.left + box.width / 2, y)
+    await waited()
+    expect(barsUp(host)).toBe(true)
+    const top = host.querySelector('.reader-top-bar') as Element
+    const bottom = host.querySelector('.reader-bottom-bar') as Element
+    const everywhere = (el: Element) => touchActions(el).map(() => 'auto')
+    // THE STATE THIS TEST NAMES: a touch's behaviours narrow down the tree,
+    // so the room and the text each take `manipulation` as their own, and
+    // nothing above a bar or a panel takes it.
+    expect(touchActions(room)).toEqual([
+      'manipulation',
+      ...everywhere(room).slice(1),
+    ])
+    expect(getComputedStyle(text).touchAction).toBe('manipulation')
+    expect(touchActions(top)).toEqual(everywhere(top))
+    expect(touchActions(bottom)).toEqual(everywhere(bottom))
+    await toggleContents()
+    const panel = contents() as Element
+    expect(panel.classList.contains('docked-panel')).toBe(true)
+    expect(host.querySelector('.book-reader')?.getAttribute('data-panel')).toBe(
+      'contents',
+    )
+    expect(touchActions(panel)).toEqual(everywhere(panel))
+  })
+
+  it('at 1920×1080 with the contents docked, closes them from a click on the room between the column and the panel, turning nothing, and not from one beside the panel', async () => {
+    const { host, text, room, y } = await opened(PAGED)
+    await onByKey()
+    await toggleContents()
+    expect(contents()).not.toBeNull()
+    const box = text.getBoundingClientRect()
+    const panel = (contents() as Element).getBoundingClientRect()
+    // The area stops at the room book.css sets the text in by for the panel.
+    const area =
+      room.getBoundingClientRect().right -
+      Number.parseFloat(getComputedStyle(text).marginRight)
+    expect(panel.left).toBeGreaterThan(area)
+    expect(area - box.right).toBeGreaterThan(100)
+    const gap = (box.right + area) / 2
+    expect(gap).toBeGreaterThan((area * 2) / 3)
+    expect(document.elementFromPoint(gap, y)).toBe(room)
+    await click(gap, y)
+    await waited()
+    // THE STATE THIS TEST NAMES: the gap is the page's, in the area's right
+    // third, where a tap with a panel open waits and closes it as one on the
+    // words does, and turns nothing.
+    expect(contents()).toBeNull()
+    expect(pageOf(text)).toBe(1)
+    expect(barsUp(host)).toBe(false)
+    await toggleContents()
+    const beside = (panel.right + window.innerWidth) / 2
+    expect(document.elementFromPoint(beside, y)).toBe(room)
+    await click(beside, y)
+    await waited()
+    expect(contents()).not.toBeNull()
+    expect(pageOf(text)).toBe(1)
+  })
+})
+
+/**
  * A paged book's cover, a page image, takes a tap as a page of words does:
  * an outer third turns the page at the tap's `pointerup`, and the middle
  * third shows or hides the bars after the wait a double tap needs, unless the

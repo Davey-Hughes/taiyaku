@@ -4,6 +4,20 @@
   --strip-height: 0px;
 }
 
+/* The reading area: the text and the room a paged column leaves beside it on
+ * a wide window, which is the page's too (`readingArea`, `onPage`), so a
+ * double tap there is the page's as on the text, and the browser's
+ * double-tap zoom is taken away there as it is on the text. A box of its own
+ * since touch-action narrows down the tree: on the reader's root it would take
+ * the zoom from the bars and the panels as well, which keep theirs. */
+.book-area {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  touch-action: manipulation;
+}
+
 .book-text {
   flex: 1;
   overflow-y: auto;

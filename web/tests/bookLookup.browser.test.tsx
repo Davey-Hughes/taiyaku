@@ -7,6 +7,7 @@ import { BookReader } from '../src/BookReader'
 import { GateContext } from '../src/gate'
 import '../src/index.css'
 import type { Note } from '../src/notes'
+import { byHand, clickAt } from './support/byHand'
 import { typeInto } from './support/input'
 import { mount } from './support/mount'
 import { mouse } from './support/mouse'
@@ -1145,6 +1146,199 @@ describe('a paged vertical text with the look-up mode on', () => {
     expect(lookUpTitle()).toBe('猫')
     expect(text.scrollTop).toBe(0)
   })
+})
+
+/**
+ * At a window wider than a paged book's column, a tap's thirds are the
+ * reading area's, the window less a docked panel beside the text, and the
+ * room beside the column is the page's (`readingArea`, `onPage`).
+ */
+describe('a paged book at a wide window', () => {
+  it('vertical at 1920×1080, turns on from a tap on the room above the text in the left third and back from one in the right third', async () => {
+    await windowOf(1920, 1080)
+    const { host } = await openReader(kanjiBook, {
+      lookUp: false,
+      prefs: verticalPrefs(true),
+    })
+    const text = host.querySelector('.book-text') as HTMLElement
+    const room = host.querySelector('.book-area')
+    expect(text.scrollHeight).toBeGreaterThan(text.clientHeight)
+    const box = text.getBoundingClientRect()
+    expect(box.top).toBeGreaterThan(100)
+    const y = box.top / 2
+    const left = window.innerWidth / 6
+    const right = (window.innerWidth * 5) / 6
+    expect(document.elementFromPoint(left, y)).toBe(room)
+    expect(document.elementFromPoint(right, y)).toBe(room)
+    await tapThenWait(left, y)
+    // THE STATE THIS TEST NAMES: the room above the text turned the page.
+    await expect.poll(() => text.scrollTop).toBeGreaterThan(0)
+    await tapThenWait(right, y)
+    await expect.poll(() => text.scrollTop).toBe(0)
+  })
+
+  it('vertical at 1920×1080 with the contents docked, leaves them open from a tap below the panel and closes them from one below the text', async () => {
+    await windowOf(1920, 1080)
+    const { host } = await openReader(kanjiBook, {
+      lookUp: false,
+      prefs: verticalPrefs(true),
+    })
+    const text = host.querySelector('.book-text') as HTMLElement
+    const reader = host.querySelector('.book-reader') as HTMLElement
+    const room = host.querySelector('.book-area')
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 't', bubbles: true }),
+      )
+    })
+    await wait(300)
+    expect(reader.dataset.panel).toBe('contents')
+    const panel = (
+      document.querySelector(
+        '[role="dialog"][aria-label="Contents"]',
+      ) as Element
+    ).getBoundingClientRect()
+    const box = text.getBoundingClientRect()
+    // Vertical, the panel docks on the left, and the room book.css keeps for
+    // it is the text's left margin, where the reading area starts.
+    expect(
+      Number.parseFloat(getComputedStyle(text).marginLeft),
+    ).toBeGreaterThan(panel.right)
+    const y = (box.bottom + window.innerHeight) / 2
+    expect(y).toBeGreaterThan(panel.bottom)
+    const below: [number, number] = [(panel.left + panel.right) / 2, y]
+    const inside: [number, number] = [
+      box.left + (window.innerWidth - box.left) / 6,
+      y,
+    ]
+    expect(document.elementFromPoint(...below)).toBe(room)
+    expect(document.elementFromPoint(...inside)).toBe(room)
+    await tapThenWait(...below)
+    // THE STATE THIS TEST NAMES: below the panel is left of the reading area,
+    // so the tap there is not the page's and closes nothing.
+    expect(reader.dataset.panel).toBe('contents')
+    await tapThenWait(...inside)
+    expect(reader.dataset.panel).toBeUndefined()
+  })
+
+  it('with the look-up docked at 1920×1080, looks up from the reading area’s middle third, in the window’s and the column’s left thirds, and not from beside the panel', async () => {
+    await windowOf(1920, 1080)
+    const { host, asked } = await openReader(kanjiBook, {
+      prefs: { 'book-layout': { mode: 'scroll', paged: true } },
+    })
+    const text = host.querySelector('.book-text') as HTMLElement
+    const reader = host.querySelector('.book-reader') as HTMLElement
+    const before = text.getBoundingClientRect()
+    const middle = before.top + before.height / 2
+    await tapThenWait(
+      ...characterIn(text, {
+        ...before.toJSON(),
+        left: window.innerWidth / 2 - 40,
+        right: window.innerWidth / 2 + 40,
+        top: middle,
+        bottom: middle + 40,
+      }),
+    )
+    expect(asked).toHaveLength(1)
+    expect(reader.dataset.panel).toBe('lookup')
+    const panel = (
+      document.querySelector('[role="dialog"][aria-label="Look up"]') as Element
+    ).getBoundingClientRect()
+    const box = text.getBoundingClientRect()
+    // The area runs to the room docked for the panel, 16 px short of it.
+    const area = panel.left - 16
+    expect(box.right).toBeLessThanOrEqual(area)
+    const from = area / 3 + 8
+    const to = Math.min(window.innerWidth / 3, box.left + box.width / 3) - 8
+    expect(to - from).toBeGreaterThan(40)
+    const at = characterIn(text, {
+      ...box.toJSON(),
+      left: from,
+      right: to,
+      top: middle,
+      bottom: middle + 40,
+    })
+    await tapThenWait(...at)
+    // THE STATE THIS TEST NAMES: the area's middle third looks up, though the
+    // window's and the column's left thirds would turn the page.
+    expect(asked).toHaveLength(2)
+    expect(reader.dataset.panel).toBe('lookup')
+    const beside = { x: (panel.right + window.innerWidth) / 2, y: middle }
+    expect(document.elementFromPoint(beside.x, beside.y)).toBe(
+      host.querySelector('.book-area'),
+    )
+    await tapThenWait(beside.x, beside.y)
+    expect(reader.dataset.panel).toBe('lookup')
+    expect(asked).toHaveLength(2)
+  })
+
+  it('paged at 1440×900, takes a tap on the room beside the column straight after a look-up as a double tap’s second, closing the look-up and peeking', async () => {
+    await windowOf(1440, 900)
+    const { host, asked } = await openReader(translated, {
+      prefs: { 'book-layout': { mode: 'scroll', paged: true } },
+    })
+    const room = host.querySelector('.book-area')
+    const point = across(characterBox(host, 0, 5), 0.5)
+    expect(point[0]).toBeGreaterThan(window.innerWidth / 3)
+    const first = Date.now() / 1000
+    await tapAt(...point, first)
+    await wait(700)
+    expect(lookUpTitle()).toBe('五')
+    const box = (
+      host.querySelector('.book-text') as Element
+    ).getBoundingClientRect()
+    expect(box.left).toBeGreaterThan(100)
+    const beside: [number, number] = [box.left / 2, point[1]]
+    expect(document.elementFromPoint(...beside)).toBe(room)
+    await tapAt(...beside, first + 0.15)
+    await wait(400)
+    // THE STATE THIS TEST NAMES: the room took the second tap as the text
+    // would, though it is far from the first.
+    expect(lookUpTitle()).toBeUndefined()
+    expect(host.querySelector('.book-peek')?.textContent).toBe('Four five six.')
+    expect(asked).toHaveLength(1)
+  })
+
+  it.each(['the words', 'the room beside the column'])(
+    'paged at 1440×900, takes a mouse’s drag from a word released on %s as a selection, closing the look-up and drawing the selection bar',
+    async (onto) => {
+      await windowOf(1440, 900)
+      const { host } = await openReader(book, {
+        prefs: { 'book-layout': { mode: 'scroll', paged: true } },
+      })
+      const text = host.querySelector('.book-text') as HTMLElement
+      const first = across(characterBox(host, 0, 5), 0.5)
+      expect(first[0]).toBeGreaterThan(window.innerWidth / 3)
+      await tapThenWait(...first)
+      expect(lookUpTitle()).toBe(OPENING[5])
+      const box = text.getBoundingClientRect()
+      const from = across(characterBox(host, 0, 8), 0.5)
+      const to: [number, number] =
+        onto === 'the words'
+          ? across(characterBox(host, 0, 1), 0.5)
+          : [box.left / 2, from[1]]
+      expect(from[0] - to[0]).toBeGreaterThan(40)
+      const under = document.elementFromPoint(...to)
+      expect(
+        onto === 'the words'
+          ? under?.closest('.book-text')
+          : under?.classList.contains('book-area'),
+      ).toBe(onto === 'the words' ? text : true)
+      // In steps, as a hand moves.
+      await byHand(async () => {
+        await mouse.moveTo(...from)
+        await mouse.press()
+        await mouse.along(...from, 0, to[0] - from[0])
+        await mouse.release()
+      })
+      await wait(300)
+      // THE STATE THIS TEST NAMES: the release ends a drag on the page either
+      // way, which closes the look-up and offers the selection.
+      expect(lookUpTitle()).toBeUndefined()
+      expect(window.getSelection()?.toString()).not.toBe('')
+      expect(host.querySelector('.book-selection-bar')).not.toBeNull()
+    },
+  )
 })
 
 /** Twenty kana, a match for `ねずみ`, and more kana after it. */
@@ -2422,7 +2616,7 @@ describe('a look-up that opens under the finger', () => {
       window.innerHeight - 30,
     ]
     expect(document.elementFromPoint(...beside)).toBe(
-      host.querySelector('.book-reader'),
+      host.querySelector('.book-area'),
     )
     await tapThenWait(...beside)
     expect(lookUpTitle()).toBe('猫')
@@ -2450,6 +2644,50 @@ describe('a look-up that opens under the finger', () => {
     await wait(400)
     expect(host.querySelector('.book-peek')).toBeNull()
   })
+
+  it.each([
+    ['pressed in time and lifted too late', 0.25, 0.33, true],
+    [
+      'pressed too late while the panel still lets it through',
+      0.31,
+      0.33,
+      false,
+    ],
+  ] as const)(
+    'paged at 860 by 844, leaves the look-up open for a second tap %s on the room beside the column under the panel',
+    async (_, down, up, expires) => {
+      const { host, text, asked } = await openCats(FLOWS[1], [860, 844])
+      await tapThenWait(...firstTap(text))
+      await wait(100)
+      const panel = panelBox()
+      await closeLookUp()
+      await wait(400)
+      const box = text.getBoundingClientRect()
+      expect(panel.right - box.right).toBeGreaterThan(20)
+      const point: [number, number] = [
+        (box.right + panel.right) / 2,
+        panel.top + panel.height / 2,
+      ]
+      expect(document.elementFromPoint(...point)).toBe(
+        host.querySelector('.book-area'),
+      )
+      const before = asked.length
+      const expire = holdTapsPassing()
+      const stamp = Date.now() / 1000
+      await tapAt(...firstTap(text), stamp)
+      await wait(450)
+      await touchDown(...point, stamp + down)
+      if (expires) expire()
+      await touchUp(stamp + up)
+      await wait(400)
+      // THE STATE THIS TEST NAMES: the tap went through the panel the reader
+      // saw onto the room under it, which takes it as it would words there,
+      // so it closes nothing.
+      expect(lookUpTitle()).toBe('猫')
+      expect(asked.length - before).toBe(1)
+      expect(host.querySelector('.book-peek')).toBeNull()
+    },
+  )
 
   describe.each(FLOWS)('$flow', (flow) => {
     it.each([
@@ -2567,6 +2805,47 @@ describe('the selection bar with the look-up mode off', () => {
     expect(wordBox(host, spot.block, spot.at).left).not.toBe(words)
     expect(bar()?.left).toBe(drawn)
   })
+})
+
+describe('the selection bar’s Look up, pressed by hand', () => {
+  it.each(['a mouse’s click', 'a finger’s tap'])(
+    'looks the selection up from %s on it, a press the bar takes and not the page',
+    async (by) => {
+      await windowOf(1440, 900)
+      const { host, asked } = await openReader(book, {
+        lookUp: false,
+        prefs: { 'book-layout': { mode: 'scroll', paged: true } },
+      })
+      const from = across(characterBox(host, 0, 8), 0.5)
+      const to = across(characterBox(host, 0, 1), 0.5)
+      // In steps, as a hand moves.
+      await byHand(async () => {
+        await mouse.moveTo(...from)
+        await mouse.press()
+        await mouse.along(...from, 0, to[0] - from[0])
+        await mouse.release()
+      })
+      await wait(300)
+      const picked = window.getSelection()?.toString()
+      expect(picked).not.toBe('')
+      const button = [
+        ...host.querySelectorAll('.book-selection-bar button'),
+      ].find((b) => b.textContent === 'Look up') as HTMLElement
+      expect(button).toBeDefined()
+      const point = across(button.getBoundingClientRect(), 0.5)
+      expect(document.elementFromPoint(...point)).toBe(button)
+      if (by === 'a mouse’s click') {
+        await byHand(() => clickAt(button))
+      } else {
+        await tapAt(...point)
+      }
+      await wait(400)
+      // THE STATE THIS TEST NAMES: the press reached the bar's button, so it
+      // looked up what was selected.
+      expect(asked).toEqual([`/api/dictionary/ja/${picked}`])
+      expect(lookUpTitle()).toBe(picked)
+    },
+  )
 })
 
 describe('the selection bar, after a hold with the look-up open', () => {
