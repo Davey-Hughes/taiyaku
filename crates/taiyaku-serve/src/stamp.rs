@@ -218,11 +218,12 @@ fn answer(joined: Result<Result<serde_json::Value, NoAnswer>, tokio::task::JoinE
     match joined {
         Ok(Ok(body)) => Json(body).into_response(),
         Ok(Err(no)) => no.into_response(),
-        Err(e) => (
+        // The panic's own message in the log alone (O387).
+        Err(e) => crate::routes::answered_and_logged(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("the stamp did not run: {e}"),
-        )
-            .into_response(),
+            "the stamp did not run".to_string(),
+            &e.to_string(),
+        ),
     }
 }
 

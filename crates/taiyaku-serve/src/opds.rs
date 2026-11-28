@@ -349,7 +349,13 @@ async fn visible_editions_by_work(
     crate::routes::on_the_grant(state, extensions, Ok(None), |conn, principal| {
         taiyaku_library::browse::visible_editions(conn, &principal.access)
             .map(Some)
-            .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())
+            .map_err(|why| {
+                crate::routes::answered_and_logged(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "the works could not be listed".to_string(),
+                    &why,
+                )
+            })
     })
     .await
     .and_then(|answer| answer)
@@ -710,11 +716,7 @@ async fn advertised_types(
     match typed {
         Ok(Ok(types)) => Ok(types),
         Ok(Err(message)) => Err(missing(message)),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("typing the editions panicked: {e}"),
-        )
-            .into_response()),
+        Err(e) => Err(crate::routes::panicked("typing the editions", &e)),
     }
 }
 
@@ -808,11 +810,7 @@ pub(crate) async fn stream_page(
                 .into_response(),
         ),
         Ok(Err(e)) => crate::routes::unreadable(&what, &e),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("page read panicked: {e}"),
-        )
-            .into_response(),
+        Err(e) => crate::routes::panicked("page read", &e),
     }
 }
 
@@ -865,11 +863,7 @@ pub(crate) async fn cover(
         )
             .into_response(),
         Ok(Err(e)) => crate::routes::unreadable(&what, &e),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("cover generation panicked: {e}"),
-        )
-            .into_response(),
+        Err(e) => crate::routes::panicked("cover generation", &e),
     }
 }
 

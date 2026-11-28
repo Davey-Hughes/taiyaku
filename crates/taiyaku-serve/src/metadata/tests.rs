@@ -1526,9 +1526,10 @@ async fn a_closure_that_panicked_is_a_500_naming_what_was_running() {
     let body = test_support::body_string(response).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert!(
-        body.contains("editing a member panicked"),
-        "it names what was running, not just that something did: {body}"
+    assert_eq!(
+        body, "editing a member panicked; the server's log says why",
+        "it names what was running, not just that something did, and the \
+         panic's own words are in the log alone (O387)"
     );
 }
 

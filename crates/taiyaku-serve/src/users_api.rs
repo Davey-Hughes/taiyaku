@@ -51,13 +51,15 @@ enum UserAnswer {
     /// unchanged will keep failing for a reason about the library's state;
     /// and rather than `500`, because nothing failed.
     Refused(String),
-    /// A store failure — 500.
+    /// A store failure — 500. The store's text goes to the log alone, and the
+    /// client is sent [`crate::routes::COULD_NOT_ANSWER`] (O387).
     Failed(String),
 }
 
 impl IntoResponse for UserAnswer {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            Self::Failed(why) => return crate::routes::store_failed_as_json(&why),
             Self::Missing(id) => (StatusCode::NOT_FOUND, format!("there is no account {id}")),
             Self::NoSuch(what) => (
                 StatusCode::NOT_FOUND,
@@ -65,7 +67,6 @@ impl IntoResponse for UserAnswer {
             ),
             Self::Unusable(why) => (StatusCode::BAD_REQUEST, why),
             Self::Refused(why) => (StatusCode::CONFLICT, why),
-            Self::Failed(why) => (StatusCode::INTERNAL_SERVER_ERROR, why),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
     }
@@ -84,10 +85,10 @@ fn answered(why: account::WriteError) -> UserAnswer {
 }
 
 /// `config_api::admin_panicked`'s twin for this module: the one failure
-/// `spawn_blocking` itself can hand back, worded through [`UserAnswer`] so the
-/// body stays JSON like every other refusal these routes send.
+/// `spawn_blocking` itself can hand back, as JSON like every other refusal
+/// these routes send, the panic's own message in the log alone (O387).
 fn user_panicked(what: &str, why: &tokio::task::JoinError) -> Response {
-    UserAnswer::Failed(format!("{what} panicked: {why}")).into_response()
+    crate::routes::panicked_as_json(what, why)
 }
 
 /// One account, whole, as C4 §4's screen shows it: the row, whether anybody

@@ -62,12 +62,14 @@ fn backup_json(entry: &Backup) -> serde_json::Value {
     })
 }
 
+/// A 500 saying `what` failed, as JSON, and `why`, which can name the store's
+/// path, in the log alone (O387).
 fn failed(what: &str, why: &str) -> Response {
-    (
+    crate::routes::answered_and_logged_as_json(
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({ "error": format!("{what}: {why}") })),
+        format!("{what} failed"),
+        why,
     )
-        .into_response()
 }
 
 /// `GET /api/library/backups` — what exists, newest first.
@@ -89,7 +91,7 @@ pub(crate) async fn list_backups(
         }))
         .into_response(),
         Ok(Err(why)) => failed("listing backups", &why),
-        Err(why) => failed("listing backups panicked", &why.to_string()),
+        Err(why) => crate::routes::panicked_as_json("listing backups", &why),
     }
 }
 
@@ -134,7 +136,7 @@ pub(crate) async fn create_backup(
         )
             .into_response(),
         Ok(Err(taiyaku_library::backup::TakeError::Failed(why))) => failed("taking a backup", &why),
-        Err(why) => failed("taking a backup panicked", &why.to_string()),
+        Err(why) => crate::routes::panicked_as_json("taking a backup", &why),
     }
 }
 
@@ -194,7 +196,7 @@ pub(crate) async fn download_backup(
         )
             .into_response(),
         Ok(Err(why)) => failed("reading a backup", &why),
-        Err(why) => failed("reading a backup panicked", &why.to_string()),
+        Err(why) => crate::routes::panicked_as_json("reading a backup", &why),
     }
 }
 

@@ -132,6 +132,7 @@ enum NoAnswer {
     /// the "is this document even well-formed" half without a connection.
     Unusable(String),
     /// A store failure, which is a 500 rather than anything a caller can fix.
+    /// The store's text goes to the log alone (O387).
     Failed(String),
     /// Another job already holds [`crate::ServeState::library_job`] (any job
     /// [`crate::LibraryJob`] names) — 409. The same spirit as [`start_scan`]'s
@@ -147,7 +148,7 @@ impl IntoResponse for NoAnswer {
                 (StatusCode::NOT_FOUND, format!("there is no rule {id}")).into_response()
             }
             Self::Unusable(why) => (StatusCode::BAD_REQUEST, why).into_response(),
-            Self::Failed(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+            Self::Failed(why) => crate::routes::store_failed(&why),
             Self::Busy(why) => (StatusCode::CONFLICT, why).into_response(),
         }
     }
@@ -157,7 +158,7 @@ impl IntoResponse for NoAnswer {
 /// panicked and nothing answered at all. Worded the way `curation::panicked`
 /// words its own.
 fn panicked(what: &str, why: &tokio::task::JoinError) -> Response {
-    NoAnswer::Failed(format!("{what} panicked: {why}")).into_response()
+    crate::routes::panicked(what, why)
 }
 /// Whether the `root` table holds `id`.
 ///
@@ -1185,13 +1186,26 @@ pub(crate) enum AdminAnswer {
     /// library it made before its answer is drawn.
     Refused(String),
     /// A store failure — 500: one inside [`scan::update_root`] or
-    /// [`scan::remove_root`], say.
+    /// [`scan::remove_root`], say. The client is sent
+    /// [`crate::routes::COULD_NOT_ANSWER`], and this text goes to the log
+    /// alone (O387).
     Failed(String),
+    /// The blocking work `what` names panicked — 500, naming `what`, with
+    /// `why`, the `JoinError`'s text, in the log alone (O387).
+    Panicked { what: String, why: String },
 }
 
 impl IntoResponse for AdminAnswer {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            Self::Failed(why) => return crate::routes::store_failed_as_json(&why),
+            Self::Panicked { what, why } => {
+                return crate::routes::answered_and_logged_as_json(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("{what} panicked"),
+                    &why,
+                );
+            }
             Self::MissingDir(id) => (StatusCode::NOT_FOUND, format!("there is no directory {id}")),
             Self::MissingLibrary(id) => {
                 (StatusCode::NOT_FOUND, format!("there is no library {id}"))
@@ -1199,7 +1213,6 @@ impl IntoResponse for AdminAnswer {
             Self::NotIn(why) => (StatusCode::NOT_FOUND, why),
             Self::Unusable(why) => (StatusCode::BAD_REQUEST, why),
             Self::Refused(why) => (StatusCode::CONFLICT, why),
-            Self::Failed(why) => (StatusCode::INTERNAL_SERVER_ERROR, why),
         };
         (status, Json(serde_json::json!({ "error": message }))).into_response()
     }
@@ -1210,7 +1223,18 @@ impl IntoResponse for AdminAnswer {
 /// rather than [`NoAnswer`] so the body stays JSON like every other refusal
 /// these routes send.
 pub(crate) fn admin_panicked(what: &str, why: &tokio::task::JoinError) -> Response {
-    AdminAnswer::Failed(format!("{what} panicked: {why}")).into_response()
+    AdminAnswer::panicked(what, why).into_response()
+}
+
+impl AdminAnswer {
+    /// [`Self::Panicked`], for a `Result` that answers it rather than a
+    /// `Response`.
+    pub(crate) fn panicked(what: &str, why: &tokio::task::JoinError) -> Self {
+        Self::Panicked {
+            what: what.to_string(),
+            why: why.to_string(),
+        }
+    }
 }
 
 /// One `root` row, as [`list_roots`] sends it and `libraries_api` sends the

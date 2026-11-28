@@ -12022,6 +12022,59 @@ mod answered_without_a_server_path {
         );
     }
 
+    /// The store's text as rusqlite words a prepare SQLite refused at a
+    /// position: the message, the whole statement and the offset (O387).
+    const STATEMENT: &str =
+        "no such column: name in SELECT id, name FROM libraries ORDER BY name at offset 11";
+
+    /// `answered_and_logged`'s path: the store's text reaches the log whole,
+    /// and the body holds the sentence alone.
+    #[tokio::test]
+    async fn answered_and_logged_puts_the_store_text_in_the_log_alone() {
+        let mut log = Vec::new();
+        let response = logged_to(
+            &mut log,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "listing libraries",
+            STATEMENT,
+            Told::Text,
+        );
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            test_support::body_string(response).await,
+            "listing libraries; the server's log says why"
+        );
+        assert_eq!(
+            String::from_utf8(log).expect("text"),
+            format!("taiyaku: listing libraries: {STATEMENT}\n")
+        );
+    }
+
+    /// `answered_and_logged_as_json`'s path: the same, with the sentence in
+    /// `error`.
+    #[tokio::test]
+    async fn answered_and_logged_as_json_puts_the_store_text_in_the_log_alone() {
+        let mut log = Vec::new();
+        let response = logged_to(
+            &mut log,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "listing libraries",
+            STATEMENT,
+            Told::Json,
+        );
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body: serde_json::Value =
+            serde_json::from_str(&test_support::body_string(response).await).expect("JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({ "error": "listing libraries; the server's log says why" })
+        );
+        assert_eq!(
+            String::from_utf8(log).expect("text"),
+            format!("taiyaku: listing libraries: {STATEMENT}\n")
+        );
+    }
+
     /// The store's directory renamed under a running router: the shared
     /// connection keeps the file it has open, and a save's own connection
     /// (`Library::saving`) cannot open one, with an error naming the store.
@@ -12602,6 +12655,407 @@ mod jpeg_xl_by_what_the_client_accepts {
         assert!(
             ground.iter().all(|&channel| channel >= 250),
             "the PNG page's transparent ground at 64 px: {ground:?}"
+        );
+    }
+}
+
+/// O387: a 500 a reader can be sent is a sentence this server wrote, and the
+/// store's own text, which rusqlite 0.43 words as the message, the whole
+/// statement and the offset, goes to the log alone.
+///
+/// **Each fault is the one O387 names**, checked by preparing a statement
+/// against it and seeing `SqlInputError` (`refuses_at_a_position`): a fault
+/// that made a plain `SqliteFailure` would leave a test passing against a body
+/// that never held a statement.
+mod a_store_fault_sends_no_statement {
+    use super::*;
+    use crate::test_support::{self, Reader};
+    use rusqlite::limits::Limit;
+
+    pub(super) const GENERIC: &str =
+        "the library could not answer this request; the server's log says why";
+
+    /// `sql` is refused at a position, so the store's error for it carries the
+    /// statement.
+    pub(super) fn refuses_at_a_position(conn: &rusqlite::Connection, sql: &str) {
+        match conn.prepare(sql) {
+            Err(rusqlite::Error::SqlInputError { .. }) => {}
+            Err(other) => panic!("`{sql}` failed without a position: {other}"),
+            Ok(_) => panic!("`{sql}` prepared"),
+        }
+    }
+
+    /// Neither the statement nor its offset is in `body`.
+    pub(super) fn holds_no_statement(uri: &str, body: &str) {
+        assert!(!body.contains("SELECT"), "{uri}: {body}");
+        assert!(!body.contains(" at offset "), "{uri}: {body}");
+    }
+
+    /// SQLite's ceiling on a statement's parameters, lowered to one: a
+    /// session binds one, and a listing binds one per work, the cause O387's
+    /// row found, and a restricted reader's grant one per directory.
+    fn one_parameter_at_most(state: &ServeState) {
+        let conn = state.library.conn();
+        conn.set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, 1)
+            .expect("lowers the ceiling");
+        refuses_at_a_position(&conn, "SELECT ?1, ?2");
+    }
+
+    /// `n` more hand-imported works, so a listing binds more than one.
+    fn more_unfiled_works(conn: &rusqlite::Connection, n: usize) {
+        for i in 0..n {
+            let json = format!(
+                r#"{{ "taiyaku": 1, "work": {{ "title": "W{i}", "reading": "rtl" }},
+                     "editions": {{ "raw": {{ "label": "Raw", "members": [
+                       {{ "path": "c1.cbz", "sha256": "x{i}", "pages": 2 }}
+                     ], "spreads": [] }} }},
+                     "hub": "raw", "alignments": [] }}"#
+            );
+            let doc = taiyaku_core::Sidecar::from_json(&json).expect("the fixture parses");
+            taiyaku_library::import::sidecar(
+                conn,
+                &doc,
+                std::path::Path::new(&format!("/library/w{i}/taiyaku.json")),
+            )
+            .expect("imports");
+        }
+    }
+
+    /// `ALTER TABLE {table} RENAME COLUMN {column}`, which a statement naming
+    /// the column then refuses at its position.
+    pub(super) fn rename(state: &ServeState, table: &str, column: &str) {
+        let conn = state.library.conn();
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} RENAME COLUMN {column} TO {column}_gone"
+        ))
+        .expect("renames the column");
+        refuses_at_a_position(&conn, &format!("SELECT {column} FROM {table}"));
+    }
+
+    async fn merged_answers(
+        merged: &test_support::EditionMergedFromTwoLibraries,
+        reader: Reader,
+        uri: &str,
+    ) -> (StatusCode, String) {
+        let response = merged.get(reader, uri, None).await;
+        (
+            response.status(),
+            String::from_utf8_lossy(response.body()).into_owned(),
+        )
+    }
+
+    /// `library_api::failed`, on the grid and a search past the ceiling.
+    #[tokio::test]
+    async fn the_grid_and_a_search_past_the_parameter_ceiling() {
+        let (router, state, _fixture) = test_support::router_over_a_library().await;
+        more_unfiled_works(&state.library.conn(), 3);
+        one_parameter_at_most(&state);
+        for (uri, said) in [
+            ("/api/library/series", "reading the unfiled works failed"),
+            ("/api/library/search?q=W", "reading the search failed"),
+        ] {
+            let response = test_support::get(&router, uri).await;
+            let status = response.status();
+            let body = test_support::body_string(response).await;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{uri}: {body}");
+            assert_eq!(body, format!("{said}; the server's log says why"), "{uri}");
+            holds_no_statement(uri, &body);
+        }
+    }
+
+    /// `list_works`, where a restricted reader's grant is read.
+    #[tokio::test]
+    async fn the_works_list_as_a_restricted_reader() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        one_parameter_at_most(&merged.state);
+        let (status, body) = merged_answers(&merged, Reader::MangaOnly, "/api/works").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(
+            body,
+            "the works could not be listed; the server's log says why"
+        );
+        holds_no_statement("/api/works", &body);
+    }
+
+    /// `list_works`, where each work's summary is read.
+    #[tokio::test]
+    async fn the_works_list_as_the_administrator() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        rename(&merged.state, "series", "sort_title");
+        let (status, body) = merged_answers(&merged, Reader::Administrator, "/api/works").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(
+            body,
+            "the works could not be listed; the server's log says why"
+        );
+        holds_no_statement("/api/works", &body);
+    }
+
+    /// `view::flags_or_refuse`, which a restricted reader's page and truth
+    /// both ask first.
+    #[tokio::test]
+    async fn a_page_and_the_truth_as_a_restricted_reader() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        one_parameter_at_most(&merged.state);
+        let slug = &merged.slug;
+        for uri in [
+            format!("/api/works/{slug}/raw/pages/2"),
+            format!("/api/works/{slug}/truth"),
+        ] {
+            let (status, body) = merged_answers(&merged, Reader::MangaOnly, &uri).await;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{uri}: {body}");
+            assert_eq!(
+                body,
+                format!("work `{slug}` could not be read; the server's log says why"),
+                "{uri}"
+            );
+            holds_no_statement(&uri, &body);
+        }
+    }
+
+    /// `opds::visible_editions_by_work`, on the OPDS works feed.
+    #[tokio::test]
+    async fn the_opds_works_feed_as_a_restricted_reader() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        one_parameter_at_most(&merged.state);
+        let uri = "/opds/v1.2/works";
+        let (status, body) = merged_answers(&merged, Reader::MangaOnly, uri).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(
+            body,
+            "the works could not be listed; the server's log says why"
+        );
+        holds_no_statement(uri, &body);
+    }
+
+    /// `NoTruth::Failed`, where the truth document itself is read.
+    #[tokio::test]
+    async fn the_truth_the_store_cannot_read() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        rename(&merged.state, "truth_page", "page");
+        let uri = format!("/api/works/{}/truth", merged.slug);
+        for reader in [Reader::Administrator, Reader::MangaOnly] {
+            let (status, body) = merged_answers(&merged, reader, &uri).await;
+            assert_eq!(
+                status,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{reader:?}: {body}"
+            );
+            assert_eq!(body, GENERIC, "{reader:?}");
+            holds_no_statement(&uri, &body);
+        }
+    }
+
+    /// The helper every panic arm answers through: what was running, and the
+    /// panic's own message in the log alone.
+    #[tokio::test]
+    async fn a_panic_names_what_was_running_and_nothing_it_said() {
+        let why = tokio::task::spawn_blocking(|| {
+            panic!("SELECT the panic's own words");
+        })
+        .await
+        .expect_err("a panicking closure joins as an error");
+
+        let response = crate::routes::panicked("listing works", &why);
+        let status = response.status();
+        let body = test_support::body_string(response).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(body, "listing works panicked; the server's log says why");
+    }
+}
+
+/// O387 on the administrator's routes too, at the owner's word: one route for
+/// each answer type, each now a sentence this server wrote, with the store's
+/// text in the log alone.
+mod an_admin_store_fault_sends_no_statement {
+    use super::a_store_fault_sends_no_statement::{GENERIC, holds_no_statement, rename};
+    use super::*;
+    use crate::test_support;
+    use axum::http::Method;
+
+    async fn answered(
+        router: &axum::Router,
+        method: Method,
+        uri: &str,
+        body: &serde_json::Value,
+    ) -> (StatusCode, Option<String>, String) {
+        let response = test_support::send_json(router, method, uri, body).await;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .map(|value| value.to_str().expect("a printable header").to_string());
+        (
+            status,
+            content_type,
+            test_support::body_string(response).await,
+        )
+    }
+
+    /// A JSON answer's body: `{"error": said}` and nothing else.
+    fn json_saying(said: &str) -> String {
+        serde_json::json!({ "error": said }).to_string()
+    }
+
+    /// `curation::NoAnswer::Failed`, as plain text.
+    #[tokio::test]
+    async fn the_proposals() {
+        let (router, state, _fixture) = test_support::router_over_two_suffixed_series();
+        rename(&state, "proposal", "reason");
+        let uri = "/api/library/proposals";
+        let (status, _, body) = answered(&router, Method::GET, uri, &serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(body, GENERIC);
+        holds_no_statement(uri, &body);
+    }
+
+    /// `config_api::NoAnswer::Failed`, as plain text.
+    #[tokio::test]
+    async fn the_rules() {
+        let (router, state, _fixture) = test_support::router_over_a_scanned_work();
+        rename(&state, "rule", "note");
+        let uri = "/api/library/rules";
+        let (status, _, body) = answered(&router, Method::GET, uri, &serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(body, GENERIC);
+        holds_no_statement(uri, &body);
+    }
+
+    /// `metadata::NoAnswer::Failed`, as plain text.
+    #[tokio::test]
+    async fn a_metadata_edit() {
+        let (router, state, _fixture) = test_support::router_over_a_scanned_work();
+        let slug = state.works.snapshot()[0].id.clone();
+        rename(&state, "work", "slug");
+        let uri = format!("/api/library/works/{slug}");
+        let (status, _, body) = answered(
+            &router,
+            Method::PATCH,
+            &uri,
+            &serde_json::json!({ "title": "Renamed" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(body, GENERIC);
+        holds_no_statement(&uri, &body);
+    }
+
+    /// `config_api::AdminAnswer::Failed`, as JSON.
+    #[tokio::test]
+    async fn the_libraries() {
+        let (router, state, _fixture) = test_support::router_over_a_scanned_work();
+        rename(&state, "library", "name");
+        let uri = "/api/library/libraries";
+        let (status, content_type, body) =
+            answered(&router, Method::GET, uri, &serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(content_type.as_deref(), Some("application/json"));
+        assert_eq!(body, json_saying(GENERIC));
+        holds_no_statement(uri, &body);
+    }
+
+    /// `users_api::UserAnswer::Failed`, as JSON.
+    #[tokio::test]
+    async fn the_accounts() {
+        let (router, state, _fixture) = test_support::router_over_a_scanned_work();
+        rename(&state, "api_key", "name");
+        let uri = "/api/library/users";
+        let (status, content_type, body) =
+            answered(&router, Method::GET, uri, &serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(content_type.as_deref(), Some("application/json"));
+        assert_eq!(body, json_saying(GENERIC));
+        holds_no_statement(uri, &body);
+    }
+
+    /// `backup_api::failed`, as JSON: a backup directory that is a file,
+    /// whose error names the store's path.
+    #[tokio::test]
+    async fn the_backups() {
+        let (router, state, fixture) = test_support::router_over_a_file_backed_library();
+        let db = state
+            .library
+            .path()
+            .expect("a file-backed library")
+            .to_path_buf();
+        std::fs::write(
+            taiyaku_library::backup::directory_for(&db),
+            b"a file where the backup directory belongs",
+        )
+        .expect("writes the impostor");
+        for (method, said) in [
+            (Method::GET, "listing backups failed"),
+            (Method::POST, "taking a backup failed"),
+        ] {
+            let (status, content_type, body) = answered(
+                &router,
+                method.clone(),
+                "/api/library/backups",
+                &serde_json::json!({}),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{method}: {body}"
+            );
+            assert_eq!(content_type.as_deref(), Some("application/json"));
+            assert_eq!(
+                body,
+                json_saying(&format!("{said}; the server's log says why")),
+                "{method}"
+            );
+            assert!(
+                !body.contains(&fixture.path().display().to_string()),
+                "{method}: {body}"
+            );
+        }
+    }
+
+    /// `patch_alignments`, whose save's own connection cannot open a store
+    /// that has moved, with an error naming its path.
+    #[tokio::test]
+    async fn a_correction_the_store_cannot_save() {
+        let (router, _state, fixture, slug) =
+            test_support::router_over_a_live_library_with_an_edge();
+        let uri = format!("/api/works/{slug}");
+        let tag = test_support::get(&router, &uri)
+            .await
+            .headers()
+            .get(header::ETAG)
+            .expect("an ETag")
+            .to_str()
+            .expect("a printable tag")
+            .to_string();
+        let db = fixture.path().join("db");
+        assert!(
+            db.join("library.db").is_file(),
+            "the fixture's store: {db:?}"
+        );
+        std::fs::rename(&db, fixture.path().join("db-moved")).expect("moves the store");
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::patch(format!("{uri}/alignments"))
+                    .header(header::IF_MATCH, &tag)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"from":"raw","to":"en","a":"2","b":"1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(
+            body,
+            "the correction could not be saved; the server's log says why"
+        );
+        assert!(
+            !body.contains(&fixture.path().display().to_string()),
+            "{body}"
         );
     }
 }

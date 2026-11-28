@@ -112,8 +112,11 @@ enum NoAnswer {
     /// A store failure, which is a 500 rather than anything a caller can fix.
     ///
     /// The message is the store's own. `taiyaku_library::proposals` words
-    /// every error with what it was doing — `listing proposals: …` — so a
-    /// second phrase of this module's would say it twice.
+    /// every error with what it was doing — `listing proposals: …` — and the
+    /// whole of it goes to the log, while the client is sent
+    /// [`crate::routes::COULD_NOT_ANSWER`] (O387): rusqlite words a prepare
+    /// SQLite refuses at a position as the message, the whole statement and
+    /// the offset.
     Failed(String),
     /// The caller's own text: a body this module could not read as a rule or
     /// a Split, or a rule the engine could not evaluate.
@@ -142,7 +145,7 @@ impl IntoResponse for NoAnswer {
                 (StatusCode::NOT_FOUND, format!("there is no proposal {id}")).into_response()
             }
             Self::Refused(why) => (StatusCode::CONFLICT, why).into_response(),
-            Self::Failed(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+            Self::Failed(why) => crate::routes::store_failed(&why),
             Self::Unusable(why) => (StatusCode::BAD_REQUEST, why).into_response(),
             Self::Absent(why) => (StatusCode::NOT_FOUND, why).into_response(),
             Self::Busy(why) => (StatusCode::CONFLICT, why).into_response(),
@@ -151,10 +154,10 @@ impl IntoResponse for NoAnswer {
 }
 
 /// The one failure `spawn_blocking` itself can hand back: the closure
-/// panicked and nothing answered at all. A 500 naming what was running,
-/// worded the way `routes.rs` words its own.
+/// panicked and nothing answered at all. A 500 naming what was running, the
+/// panic's own message in the log alone, as `routes.rs` answers its own.
 fn panicked(what: &str, why: &tokio::task::JoinError) -> Response {
-    NoAnswer::Failed(format!("{what} panicked: {why}")).into_response()
+    crate::routes::panicked(what, why)
 }
 
 /// Refuse `id` with a 404 unless the library actually holds it.

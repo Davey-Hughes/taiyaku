@@ -722,10 +722,8 @@ async fn a_store_error_is_a_500_rather_than_a_panic() {
             StatusCode::INTERNAL_SERVER_ERROR,
             "{path} should answer 500 once its table is gone: {body}"
         );
-        assert!(
-            body.contains("proposal"),
-            "{path}: the message says what it was reading: {body}"
-        );
+        // What it was reading is in the log alone (O387).
+        the_store_failed(&path, &body);
     }
 }
 
@@ -758,10 +756,9 @@ async fn a_store_fault_under_a_real_id_is_a_500_on_both_routes_that_read_beneath
         StatusCode::INTERNAL_SERVER_ERROR,
         "GET /{id} reads the sweep after `present` has already answered: {body}"
     );
-    assert!(
-        body.contains("scan_entry"),
-        "GET /{id}: and it is the sweep that failed, not the lookup: {body}"
-    );
+    // That it is the sweep that failed, not the lookup, is in the log alone
+    // (O387): `present` answering is what the fixture arranges.
+    the_store_failed(&format!("GET /{id}"), &body);
 
     let response = send_json(
         &router,
@@ -778,7 +775,7 @@ async fn a_store_fault_under_a_real_id_is_a_500_on_both_routes_that_read_beneath
         "the dry run over a broken library is this server's failure, not the \
          caller's rule: {body}"
     );
-    assert!(body.contains("scan_entry"), "POST /{id}/resolution: {body}");
+    the_store_failed(&format!("POST /{id}/resolution"), &body);
 }
 
 /// A failure in the **counts** is a 500, with the list beside them answering.
@@ -789,8 +786,8 @@ async fn a_store_fault_under_a_real_id_is_a_500_on_both_routes_that_read_beneath
 /// `kind` narrows the list and deliberately does not narrow the counts, for
 /// the reason `proposals::counts_by_kind`'s own doc gives. So a row the counts
 /// cannot decode, of a kind the request does not list, is read by the counts
-/// and not by the list — and the assertion below reads which of the two the
-/// message came from rather than trusting that.
+/// and not by the list, which the test checks first; which of the two failed
+/// is in the server's log alone (O387).
 ///
 /// **A blob in a `TEXT NOT NULL` column, which is a value that column can
 /// really hold.** SQLite's affinity rewrites a number into text and leaves a
@@ -843,10 +840,10 @@ async fn a_failure_in_the_counts_is_a_500_even_though_the_list_beside_it_answere
         "a count that cannot be taken is this server's failure, not a \
          refusal a caller could act on: {body}"
     );
-    assert!(
-        body.contains("counting proposals"),
-        "and it is the counts that failed rather than the list: {body}"
-    );
+    // That it is the counts that failed is in the log alone (O387); the list
+    // narrowing past the row, checked above, is what leaves them the only
+    // read that can.
+    the_store_failed("the counts", &body);
 }
 
 /// Dismissing an **accepted** proposal is a 409, not a 500.
@@ -904,6 +901,21 @@ fn a_store_fault_on(state: &crate::ServeState, on: &str) {
     .expect("installs the trigger");
 }
 
+/// `body` is the sentence a store fault is answered with, and nothing of the
+/// store's own text: which statement failed, and its words, are in the
+/// server's log alone (O387), so these tests tell the step that failed by
+/// what they arrange and by the status, not by the body.
+fn the_store_failed(what: &str, body: &str) {
+    assert_eq!(
+        body,
+        format!(
+            "{}; the server's log says why",
+            crate::routes::COULD_NOT_ANSWER
+        ),
+        "{what}"
+    );
+}
+
 /// A store fault **during an accept** is a 500, not the 409 a refusal gets.
 ///
 /// See O70. The rule is the one the server previewed, so every refusal an
@@ -927,10 +939,9 @@ async fn a_store_fault_during_an_accept_is_a_500_rather_than_a_conflict() {
     let body = test_support::body_string(response).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert!(
-        body.contains("a simulated store fault"),
-        "and it is the write that failed, not a refusal before it: {body}"
-    );
+    // A refusal before the write would be a 409; the trigger's words are in
+    // the log alone (O387).
+    the_store_failed("the accept", &body);
     assert_eq!(accepted_rules(&state), 0, "a failed accept writes no rule");
     assert_eq!(proposal_state(&state, id), "open");
 }
@@ -962,7 +973,7 @@ async fn a_failed_read_during_an_accept_is_a_500_rather_than_a_conflict() {
     let body = test_support::body_string(response).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert!(body.contains("scan_entry"), "{body}");
+    the_store_failed("the accept's dry run", &body);
     assert_eq!(accepted_rules(&state), 0);
     assert_eq!(proposal_state(&state, id), "open");
 }
@@ -986,7 +997,7 @@ async fn a_store_fault_during_an_unaccept_is_a_500_rather_than_a_conflict() {
     let body = test_support::body_string(response).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert!(body.contains("a simulated store fault"), "{body}");
+    the_store_failed("the write", &body);
     assert_eq!(accepted_rules(&state), 1, "the rule is still there");
     assert_eq!(
         proposal_state(&state, id),
@@ -1016,7 +1027,7 @@ async fn a_store_fault_during_a_dismiss_is_a_500_rather_than_a_conflict() {
     let body = test_support::body_string(response).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert!(body.contains("a simulated store fault"), "{body}");
+    the_store_failed("the write", &body);
     assert_eq!(proposal_state(&state, id), "open");
 }
 
@@ -1118,7 +1129,7 @@ async fn a_store_fault_during_a_reopen_is_a_500_rather_than_a_conflict() {
     let body = test_support::body_string(response).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert!(body.contains("a simulated store fault"), "{body}");
+    the_store_failed("the write", &body);
     assert_eq!(proposal_state(&state, id), "dismissed");
 }
 
@@ -1206,9 +1217,10 @@ async fn a_closure_that_panicked_is_a_500_naming_what_was_running() {
     let body = test_support::body_string(response).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert!(
-        body.contains("listing proposals panicked"),
-        "it names what was running, not just that something did: {body}"
+    assert_eq!(
+        body, "listing proposals panicked; the server's log says why",
+        "it names what was running, not just that something did, and the \
+         panic's own words are in the log alone (O387)"
     );
 }
 

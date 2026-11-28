@@ -430,7 +430,13 @@ pub(crate) fn flags_or_refuse(
     match taiyaku_library::browse::visible_members(conn, access, slug, edition) {
         Ok(flags) if flags.values().flatten().any(|seen| seen.visible) => Ok(flags),
         Ok(_) => Err(not_found(format!("no work `{slug}`"))),
-        Err(why) => Err((StatusCode::INTERNAL_SERVER_ERROR, why).into_response()),
+        // The store's text, which can carry the statement, in the log alone
+        // (O387).
+        Err(why) => Err(crate::routes::answered_and_logged(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("work `{slug}` could not be read"),
+            &why,
+        )),
     }
 }
 

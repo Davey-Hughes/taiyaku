@@ -3173,7 +3173,8 @@ async fn a_scan_that_waited_walks_the_dirs_settings_as_they_are_when_it_starts()
 }
 
 /// What a libraries route answers when its blocking work panics: a 500, as
-/// JSON like every refusal here, naming what was running.
+/// JSON like every refusal here, naming what was running, and the panic's own
+/// message in the log alone (O387).
 #[tokio::test]
 async fn a_libraries_closure_that_panicked_is_a_500_naming_what_was_running() {
     let why = tokio::task::spawn_blocking(|| {
@@ -3196,10 +3197,11 @@ async fn a_libraries_closure_that_panicked_is_a_500_naming_what_was_running() {
     assert_eq!(
         json,
         serde_json::json!({
-            "error": format!("listing libraries panicked: {why}")
+            "error": "listing libraries panicked; the server's log says why"
         }),
         "the whole body is the one key, naming what was running: {body}"
     );
+    assert!(!body.contains("a libraries closure"), "{body}");
 }
 
 /// A directory's path that is empty or not absolute, as the routes are sent it.
@@ -4959,6 +4961,9 @@ async fn a_library_is_not_removed_while_a_scan_of_a_dir_it_shares_is_reserved() 
 /// A directory in no library, which no writer leaves, is a fault where the
 /// list would name its libraries, not a directory drawn as no library's: here
 /// one planted by SQL inside Manga's `m`, which `m`'s `nested` would list.
+///
+/// The sentence naming the directory is in the log alone, as every store
+/// fault's text is (O387), so the answer is the 500's own sentence.
 #[tokio::test]
 async fn a_directory_in_no_library_fails_the_list_where_it_would_be_named() {
     let n = test_support::router_over_a_library_nested_in_another();
@@ -4980,8 +4985,12 @@ async fn a_directory_in_no_library_fails_the_list_where_it_would_be_named() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{failed}");
     assert_eq!(
         the_sentence(&failed),
-        format!("directory {planted} is in no library")
+        format!(
+            "{}; the server's log says why",
+            crate::routes::COULD_NOT_ANSWER
+        )
     );
+    assert!(!failed.to_string().contains(&planted), "{failed}");
 }
 
 #[tokio::test]

@@ -730,7 +730,16 @@ async fn a_haiyaku_read_that_fails_is_500() {
         &[("block", "9"), ("text", "Reeds put out the lamp.")],
     )
     .await;
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let status = response.status();
+    let body = body_string(response).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(
+        body,
+        format!(
+            "the characters of `{}` of `{}` could not be read; the server's log says why",
+            shelf.a.key, shelf.a.slug
+        )
+    );
 }
 
 /// [`looked_up`], the route's blocking half, and not the handler: the

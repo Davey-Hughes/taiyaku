@@ -424,10 +424,7 @@ pub(crate) async fn list_dirs(
         .into_response(),
         Ok(Err(Refusal::Outside(why))) => refused(StatusCode::FORBIDDEN, why),
         Ok(Err(Refusal::Unreadable(why))) => refused(StatusCode::BAD_REQUEST, why),
-        Err(why) => refused(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("listing directories panicked: {why}"),
-        ),
+        Err(why) => crate::routes::panicked_as_json("listing directories", &why),
     }
 }
 

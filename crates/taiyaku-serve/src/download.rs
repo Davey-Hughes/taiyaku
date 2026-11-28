@@ -511,11 +511,7 @@ pub(crate) async fn edition(
         Ok(Ok(pair)) => pair,
         Ok(Err(refusal)) => return refusal,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("preparing the download panicked: {e}"),
-            )
-                .into_response();
+            return crate::routes::panicked("preparing the download", &e);
         }
     };
 
@@ -1185,11 +1181,7 @@ pub(crate) async fn member(
         Ok(Ok(four)) => four,
         Ok(Err(refusal)) => return refusal,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("preparing the member download panicked: {e}"),
-            )
-                .into_response();
+            return crate::routes::panicked("preparing the member download", &e);
         }
     };
 

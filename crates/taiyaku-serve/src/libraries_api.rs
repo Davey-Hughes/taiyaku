@@ -685,7 +685,7 @@ async fn scan_dirs(
     .await;
     match found {
         Ok(found) => found,
-        Err(why) => Err(AdminAnswer::Failed(format!("{what} panicked: {why}"))),
+        Err(why) => Err(AdminAnswer::panicked(what, &why)),
     }
 }
 
@@ -769,8 +769,7 @@ pub(crate) async fn library_scan_status(
     match built {
         Ok(Ok(body)) => Json(body).into_response(),
         Ok(Err(answer)) => answer.into_response(),
-        Err(why) => AdminAnswer::Failed(format!("reading a library's scan status panicked: {why}"))
-            .into_response(),
+        Err(why) => admin_panicked("reading a library's scan status", &why),
     }
 }
 
@@ -796,8 +795,7 @@ pub(crate) async fn derive_status(
     .await;
     match built {
         Ok(body) => Json(body).into_response(),
-        Err(why) => AdminAnswer::Failed(format!("reading whether a derive runs panicked: {why}"))
-            .into_response(),
+        Err(why) => admin_panicked("reading whether a derive runs", &why),
     }
 }
 

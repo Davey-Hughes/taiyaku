@@ -1227,9 +1227,14 @@ async fn a_closure_that_panicked_is_a_500_naming_what_was_running() {
     let body = test_support::body_string(response).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert!(
-        body.contains("removing an account panicked"),
-        "it names what was running, not just that something did: {body}"
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "error": "removing an account panicked; the server's log says why"
+        })
+        .to_string(),
+        "it names what was running, not just that something did, and the \
+         panic's own words are in the log alone (O387)"
     );
 }
 

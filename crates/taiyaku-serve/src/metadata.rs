@@ -145,7 +145,8 @@ pub(crate) enum NoAnswer {
     /// act on.
     Refused(String),
     /// A store failure while resolving an id, which is a 500 rather than
-    /// anything a caller can fix. The message is the store's own.
+    /// anything a caller can fix. The message is the store's own, and goes to
+    /// the log alone (O387), as `curation::NoAnswer::Failed`'s does.
     Failed(String),
 }
 
@@ -158,7 +159,7 @@ impl IntoResponse for NoAnswer {
             )
                 .into_response(),
             Self::Refused(why) => (StatusCode::CONFLICT, why).into_response(),
-            Self::Failed(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
+            Self::Failed(why) => crate::routes::store_failed(&why),
         }
     }
 }
@@ -167,7 +168,7 @@ impl IntoResponse for NoAnswer {
 /// panicked and nothing answered at all. A 500 naming what was running,
 /// worded the way `curation::panicked` words its own.
 fn panicked(what: &str, why: &tokio::task::JoinError) -> Response {
-    NoAnswer::Failed(format!("{what} panicked: {why}")).into_response()
+    crate::routes::panicked(what, why)
 }
 /// Apply an edit to one work's document and persist it, answering the
 /// re-projected document **and** what [`hand::save`] made of it — the raw

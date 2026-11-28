@@ -3687,9 +3687,10 @@ async fn a_closure_that_panicked_is_a_500_naming_what_was_running() {
     let body = test_support::body_string(response).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert!(
-        body.contains("listing rules panicked"),
-        "it names what was running, not just that something did: {body}"
+    assert_eq!(
+        body, "listing rules panicked; the server's log says why",
+        "it names what was running, not just that something did, and the \
+         panic's own words are in the log alone (O387)"
     );
 }
 
@@ -3711,11 +3712,13 @@ async fn a_roots_closure_that_panicked_is_a_500_naming_what_was_running() {
     let json: serde_json::Value = serde_json::from_str(&body).expect("a JSON body");
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
-    assert!(
-        json["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("listing roots panicked")),
+    assert_eq!(
+        json["error"], "listing roots panicked; the server's log says why",
         "it names what was running, not just that something did: {body}"
+    );
+    assert!(
+        !body.contains("a config_api roots closure"),
+        "the panic's words, in the log alone (O387): {body}"
     );
 }
 

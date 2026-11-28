@@ -34,10 +34,90 @@ pub(crate) fn not_found(message: String) -> Response {
 
 /// `status`, its body `said` and where to look for the rest, and `why` on
 /// stderr (O267): a source's error can name a path on the server, which no
-/// answer a non-administrator can be sent may carry.
+/// answer a non-administrator can be sent may carry. Nor may a 500 carry the
+/// store's own text (O387): rusqlite words a prepare SQLite refuses at a
+/// position as the message, the whole statement and the offset.
 pub(crate) fn answered_and_logged(status: StatusCode, said: String, why: &str) -> Response {
-    log_line(&mut std::io::stderr(), &said, why);
-    (status, format!("{said}; the server's log says why")).into_response()
+    logged_to(&mut std::io::stderr(), status, &said, why, Told::Text)
+}
+
+/// [`answered_and_logged`] as JSON, the sentence in `error`, for the routes
+/// whose every refusal is JSON: `config_api::AdminAnswer`,
+/// `users_api::UserAnswer`, `backup_api` and `dirs_api`.
+pub(crate) fn answered_and_logged_as_json(status: StatusCode, said: String, why: &str) -> Response {
+    logged_to(&mut std::io::stderr(), status, &said, why, Told::Json)
+}
+
+/// Where a logged answer's sentence goes: the whole body, or a JSON body's
+/// `error`.
+#[derive(Clone, Copy)]
+enum Told {
+    Text,
+    Json,
+}
+
+/// The two helpers' one path, the log a writer so that a test can read what
+/// reached it: `why` goes to `out` alone, and the body says `said` and
+/// where to look for the rest.
+fn logged_to(
+    out: &mut impl std::io::Write,
+    status: StatusCode,
+    said: &str,
+    why: &str,
+    told: Told,
+) -> Response {
+    log_line(out, said, why);
+    let sentence = format!("{said}; the server's log says why");
+    match told {
+        Told::Text => (status, sentence).into_response(),
+        Told::Json => {
+            (status, axum::Json(serde_json::json!({ "error": sentence }))).into_response()
+        }
+    }
+}
+
+/// What a 500 says for an answer type's `Failed`, whose text can be the
+/// store's own (O387).
+pub(crate) const COULD_NOT_ANSWER: &str = "the library could not answer this request";
+
+/// A store fault with nothing more to say than [`COULD_NOT_ANSWER`]: a 500,
+/// and `why` in the log alone.
+pub(crate) fn store_failed(why: &str) -> Response {
+    answered_and_logged(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        COULD_NOT_ANSWER.to_string(),
+        why,
+    )
+}
+
+/// [`store_failed`] as JSON.
+pub(crate) fn store_failed_as_json(why: &str) -> Response {
+    answered_and_logged_as_json(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        COULD_NOT_ANSWER.to_string(),
+        why,
+    )
+}
+
+/// A blocking task that panicked: a 500 naming what was running, and the
+/// `JoinError`, whose text is the panic's own message, in the log alone
+/// (O387). A panic's message can be anything the code it ran formats, a
+/// store error's `Debug` with its statement included.
+pub(crate) fn panicked(what: &str, why: &tokio::task::JoinError) -> Response {
+    answered_and_logged(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("{what} panicked"),
+        &why.to_string(),
+    )
+}
+
+/// [`panicked`] as JSON.
+pub(crate) fn panicked_as_json(what: &str, why: &tokio::task::JoinError) -> Response {
+    answered_and_logged_as_json(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("{what} panicked"),
+        &why.to_string(),
+    )
 }
 
 /// `answered_and_logged`'s line. A failed write is dropped, as `ServeState::find`
@@ -445,12 +525,8 @@ impl IntoResponse for NoProgress {
         match self {
             Self::NotFound(message) => not_found(message),
             // A save's own connection names the store's path when it cannot
-            // open one (O267).
-            Self::Failed(message) => answered_and_logged(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "the library could not answer this request".to_string(),
-                &message,
-            ),
+            // open one (O267), and a read's names its statement (O387).
+            Self::Failed(message) => store_failed(&message),
         }
     }
 }
@@ -531,12 +607,12 @@ async fn list_works(
 
     match built {
         Ok(Ok(list)) => axum::Json(list).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        Err(e) => (
+        Ok(Err(e)) => answered_and_logged(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("listing works panicked: {e}"),
-        )
-            .into_response(),
+            "the works could not be listed".to_string(),
+            &e,
+        ),
+        Err(e) => panicked("listing works", &e),
     }
 }
 
@@ -582,13 +658,7 @@ pub(crate) async fn on_the_grant<T: Send + 'static>(
     let principal = principal.clone();
     tokio::task::spawn_blocking(move || check(&state.library.conn(), &principal))
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("checking the grant panicked: {e}"),
-            )
-                .into_response()
-        })
+        .map_err(|e| panicked("checking the grant", &e))
 }
 
 /// **403, not 404, and that is the design.** `view::of_edition` answers
@@ -1004,11 +1074,7 @@ async fn serve_page(
         )
             .into_response(),
         Ok(Err(e)) => unreadable(&what, &e),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("page read panicked: {e}"),
-        )
-            .into_response(),
+        Err(e) => panicked("page read", &e),
     }
 }
 
@@ -1157,11 +1223,7 @@ async fn get_thumb(
         )
             .into_response(),
         Ok(Err(e)) => unreadable(&what, &e),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("thumbnail read panicked: {e}"),
-        )
-            .into_response(),
+        Err(e) => panicked("thumbnail read", &e),
     }
 }
 
@@ -1210,11 +1272,7 @@ impl IntoResponse for NoNotes {
             Self::Refused(message) => bad_request(message),
             Self::Precondition(status, message) => (status, message).into_response(),
             // As `NoProgress::Failed`: a save's connection can name the store.
-            Self::Failed(message) => answered_and_logged(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "the library could not answer this request".to_string(),
-                &message,
-            ),
+            Self::Failed(message) => store_failed(&message),
         }
     }
 }
@@ -1315,11 +1373,7 @@ async fn get_notes(
                 .into_response()
         }
         Ok(Err(refusal)) => refusal.into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("notes read panicked: {e}"),
-        )
-            .into_response(),
+        Err(e) => panicked("notes read", &e),
     }
 }
 
@@ -1499,11 +1553,7 @@ async fn put_notes(
         )
             .into_response(),
         Ok(Err(refusal)) => refusal.into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("notes write panicked: {e}"),
-        )
-            .into_response(),
+        Err(e) => panicked("notes write", &e),
     }
 }
 
@@ -1545,7 +1595,8 @@ impl IntoResponse for NoTruth {
             Self::NotFound(message) => not_found(message),
             Self::Forbidden(message) => (StatusCode::FORBIDDEN, message).into_response(),
             Self::Precondition(status, message) => (status, message).into_response(),
-            Self::Failed(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
+            // As `NoProgress::Failed` (O387).
+            Self::Failed(message) => store_failed(&message),
         }
     }
 }
@@ -1597,11 +1648,7 @@ async fn get_truth(
                 .into_response()
         }
         Ok(Err(refusal)) => refusal.into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("truth read panicked: {e}"),
-        )
-            .into_response(),
+        Err(e) => panicked("truth read", &e),
     }
 }
 
@@ -1722,11 +1769,7 @@ async fn put_truth(
         )
             .into_response(),
         Ok(Err(refusal)) => refusal.into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("truth write panicked: {e}"),
-        )
-            .into_response(),
+        Err(e) => panicked("truth write", &e),
     }
 }
 
@@ -1795,11 +1838,7 @@ async fn get_progress(
             axum::Json(serde_json::json!({ "positions": positions })).into_response()
         }
         Ok(Err(refusal)) => refusal.into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("progress read panicked: {e}"),
-        )
-            .into_response(),
+        Err(e) => panicked("progress read", &e),
     }
 }
 
@@ -1924,11 +1963,7 @@ async fn put_progress(
     match stored {
         Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(refusal)) => refusal.into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("progress write panicked: {e}"),
-        )
-            .into_response(),
+        Err(e) => panicked("progress write", &e),
     }
 }
 
@@ -2215,6 +2250,11 @@ async fn patch_alignments(
         // waits out another connection's write, and again under it, where it
         // counts: the document can move while this correction waits.
         admitted(&found.sidecar())?;
+        // Every 500 below is this route's own sentence, and the error, which
+        // can name a path or a statement, goes to the log alone (O387).
+        let failed = |said: &str, why: &str| {
+            answered_and_logged(StatusCode::INTERNAL_SERVER_ERROR, said.to_string(), why)
+        };
         // **The save's connection, then the store's write lock, then the
         // work's document, never the other way round.** In memory the save's
         // connection is the shared one, which `list_works` holds across a
@@ -2225,14 +2265,10 @@ async fn patch_alignments(
         let conn = state
             .library
             .saving()
-            .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
-        let held = conn.unchecked_transaction().map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("starting a correction: {e}"),
-            )
-                .into_response()
-        })?;
+            .map_err(|why| failed("the correction could not be saved", &why))?;
+        let held = conn
+            .unchecked_transaction()
+            .map_err(|e| failed("the correction could not be started", &e.to_string()))?;
         found.update(|current| {
             admitted(current)?;
             let mut next = (**current).clone();
@@ -2296,7 +2332,7 @@ async fn patch_alignments(
                 .map_err(|missing| match missing {
                     crate::works::NoRow::Gone(message) => not_found(message),
                     crate::works::NoRow::Failed(message) => {
-                        (StatusCode::INTERNAL_SERVER_ERROR, message).into_response()
+                        failed("the correction could not be saved", &message)
                     }
                 })?;
                 // **The file, then the rows — unless there is no file.**
@@ -2342,17 +2378,12 @@ async fn patch_alignments(
                             .map_err(|why| (StatusCode::CONFLICT, why).into_response())?;
                     }
                     taiyaku_read::atomic::write(&found.path, json.as_bytes(), "json")
-                        .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
+                        .map_err(|why| failed("the work's document could not be written", &why))?;
                 }
                 crate::alignments::store(&held, work_id, &next)
-                    .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
-                held.commit().map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("committing the correction: {e}"),
-                    )
-                        .into_response()
-                })?;
+                    .map_err(|why| failed("the correction could not be saved", &why))?;
+                held.commit()
+                    .map_err(|e| failed("the correction could not be committed", &e.to_string()))?;
             }
             // `json` above stays the full document that was stored; the
             // answer and its tag are this caller's view of it.
@@ -2377,11 +2408,7 @@ async fn patch_alignments(
         )
             .into_response(),
         Ok(Err(refusal)) => refusal,
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("correction panicked: {e}"),
-        )
-            .into_response(),
+        Err(e) => panicked("correction", &e),
     }
 }
 

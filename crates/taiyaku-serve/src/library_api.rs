@@ -33,14 +33,17 @@ use std::sync::Arc;
 use taiyaku_library::browse::{self, CoverTarget};
 use taiyaku_library::matches;
 
-/// A `browse` failure, or a read that panicked, which is a 500 rather than
-/// anything a caller can fix.
+/// A `browse` failure, which is a 500 rather than anything a caller can fix:
+/// a sentence naming `what`, and `why`, the store's own text, in the log
+/// alone (O387). rusqlite words a prepare SQLite refuses at a position as the
+/// message, the whole statement and the offset, and a listing past the
+/// parameter ceiling binds one placeholder per work.
 pub(crate) fn failed(what: &str, why: &str) -> Response {
-    (
+    crate::routes::answered_and_logged(
         StatusCode::INTERNAL_SERVER_ERROR,
-        format!("reading {what}: {why}"),
+        format!("reading {what} failed"),
+        why,
     )
-        .into_response()
 }
 
 /// `read`, answered on the blocking pool over the library's connection — O116.
@@ -50,7 +53,7 @@ pub(crate) fn failed(what: &str, why: &str) -> Response {
 /// nothing after the trip takes the library again. The response is built
 /// inside it too.
 ///
-/// A panic in `read` is a 500 naming `what`.
+/// A panic in `read` is a 500 naming `what`, its message in the log alone.
 pub(crate) async fn on_the_library(
     state: Arc<ServeState>,
     what: &'static str,
@@ -58,7 +61,7 @@ pub(crate) async fn on_the_library(
 ) -> Response {
     tokio::task::spawn_blocking(move || read(&state.library.conn()))
         .await
-        .unwrap_or_else(|why| failed(what, &why.to_string()))
+        .unwrap_or_else(|why| crate::routes::panicked(&format!("reading {what}"), &why))
 }
 
 /// One work as the browse screens render it.

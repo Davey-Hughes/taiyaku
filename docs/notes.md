@@ -34031,3 +34031,103 @@ base64, and with one too short for it. Before the change each was refused
 with the memory at no blocks, or at the short salt's own 64; with the
 decoy skipped again by hand for a hash that did not run, it fails and no
 other `taiyaku-library` test does.
+
+## O387: a 500 sends a sentence, and the statement goes to the log (2026-11-27)
+
+The row in `docs/status.md` says what changed. The owner's answers of
+2026-11-27 set its reach: the administrator's routes too, the panic arms in
+the same change with "{what} panicked" kept and the panic's message in the
+log, the whole statement in the log, and the administrator's 409 and 400
+folds and a scan report's `error` left as they are.
+
+**The faults, and why each test checks its own first.** rusqlite 0.43 builds
+`Error::SqlInputError` only when SQLite reports a plain `SQLITE_ERROR` with an
+offset into the statement, and that variant's text is the message, the
+statement and the offset. A fault that gives any other error is a
+`SqliteFailure`, whose text is the message alone. A test planted on one
+would still fail on `main` by its whole-body assertion, but its check that
+the body holds no statement would check nothing. So each of the eleven tests
+that plant a store fault first prepares a stand-in statement against it and
+asserts `SqlInputError` (`refuses_at_a_position`). Two faults do. One is the
+parameter ceiling lowered to one with `Connection::set_limit`: a session
+binds one parameter, so a signed-in request still gets through, while a
+listing binds one per work, the cause the row found, and a restricted
+reader's grant one per directory. The other is a column renamed with
+`ALTER TABLE … RENAME COLUMN`, which a statement naming it is refused at.
+The ceiling needs rusqlite's `limits` feature, now on `taiyaku-serve`'s
+dev-dependency only, which changes no line of `Cargo.lock`.
+
+On `main` all thirteen route tests failed at the body. Three of the bodies:
+
+```
+reading the unfiled works: preparing the edition listing: too many SQL variables in SELECT e.work_id, e.id, e.key, e.label, COUNT(m.id), …
+preparing truth pages: no such column: page in SELECT edition, page FROM truth_page WHERE work_id = ?1 at offset 16
+{"error":"listing libraries: no such column: name in SELECT id, name, match_by_content FROM library ORDER BY name, id at offset 11"}
+```
+
+The backups test (a backup directory that is a file) and the correction test
+(the store moved away from its path) failed with the store's path in the
+body. Each test asserts the whole body; the eleven also that it holds no
+`SELECT` and no " at offset ", and the two path tests that it does not
+hold the fixture's path.
+
+**Mutations.** Each mapping point was put back by hand to `main`'s shape,
+sending the store's or the panic's text, and the named test run:
+
+- `library_api::failed` sending `reading {what}: {why}`: the grid and search
+  test;
+- `list_works`' store arm sending the store's text: both works-list tests,
+  as a restricted reader and as the administrator;
+- `NoTruth::Failed` sending the store's text: the truth document test;
+- `view::flags_or_refuse` sending the store's text: the restricted reader's
+  page and truth test;
+- `opds::visible_editions_by_work` sending the store's text: the OPDS works
+  feed test;
+- the `Failed` arms of `curation::NoAnswer`, `metadata::NoAnswer` and
+  `config_api::NoAnswer`, each sending the store's text: the proposals, the
+  metadata edit and the rules tests;
+- `AdminAnswer::Failed` and `UserAnswer::Failed`, each sending the store's
+  text as JSON: the libraries and the accounts tests;
+- `backup_api::failed` sending `{said}: {why}`: the backups test;
+- `patch_alignments`' save arm sending the store's error: the correction
+  test;
+- `routes::panicked` formatting the `JoinError` into the body:
+  `a_panic_names_what_was_running_and_nothing_it_said`;
+- `curation::panicked`, `config_api::admin_panicked` and
+  `users_api::user_panicked` doing the same: curation's, the libraries' and
+  the roots', and users' closure tests.
+
+Sixteen mutations, each a separate build, and each failed the tests named
+and no other among those its filter ran. With the code restored, the whole
+`taiyaku-serve` suite passed.
+
+**What no test reaches.** No test runs a route's own panic arm
+through the route. `routes::panicked` is held by
+`a_panic_names_what_was_running_and_nothing_it_said` and by the existing
+closure tests of curation, metadata and config, which reach it through their
+module's helper; `panicked_as_json` by users' closure test; and
+`AdminAnswer::Panicked` by the libraries' and the roots' closure tests,
+through `config_api::admin_panicked`. A call site that went back to
+formatting the `JoinError` itself would pass them all. The stamp's panic
+arm, which answers through `answered_and_logged` itself, and five of
+`patch_alignments`' six (starting, a row that would not read, writing the
+work's document, storing and committing) are reached by no test; one of the
+six was mutated.
+
+**What an administrator loses.** Every 500 body on these routes is now one of the
+server's sentences, so what a body used to say is in the log alone: which
+directory is in no library, which step of an accept or dismiss failed, the
+backup directory's path. `curation/tests.rs`' store-fault tests used to tell
+the steps apart by body text; they assert the sentence now, and their docs
+say the step is in the log.
+
+**The log.** `log_line` writes `said: why` to stderr, the whole statement with
+it, newlines included, so one entry can run over several lines. Both helpers
+write it through `routes::logged_to`, which takes the log as a writer, and a
+test for each passes a buffer: with the write deleted, both failed with an
+empty log, and with `why` put in the sentence, both failed on the body. That
+the helpers pass stderr is held by no test. A listing
+fails only past its build's ceiling and writes a placeholder for each work it
+binds, two bytes each (`?,`): about 66 KB a request at the default of 32766,
+where the row saw it fail at 33000 works, and upward of 500 KB past the
+image's 250000.
